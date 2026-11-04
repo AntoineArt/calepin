@@ -1,0 +1,18 @@
+[Desktop Entry]
+Type=Application
+Name=Calepin
+GenericName=Éditeur de texte
+Comment=Notes rapides et édition de texte, Markdown rendu en direct
+Exec=calepin %F
+Icon=io.github.antoineart.Calepin
+Terminal=false
+StartupNotify=true
+StartupWMClass=io.github.antoineart.Calepin
+Categories=Utility;TextEditor;
+Keywords=notes;texte;markdown;éditeur;bloc-notes;
+MimeType=text/plain;text/markdown;text/x-markdown;text/csv;text/tab-separated-values;text/x-log;text/x-readme;text/x-tex;text/html;text/css;text/xml;text/x-python;text/x-shellscript;text/x-csrc;text/x-chdr;text/x-c++src;text/x-c++hdr;text/x-rust;text/rust;text/x-go;text/x-java;text/javascript;text/x-lua;text/x-makefile;text/x-cmake;text/x-diff;text/x-patch;text/x-ini;text/x-sql;text/x-yaml;application/json;application/xml;application/x-yaml;application/yaml;application/toml;application/x-shellscript;application/javascript;application/sql;application/x-desktop;application/x-zerosize;application/octet-stream;
+Actions=new-note;
+
+[Desktop Action new-note]
+Name=Nouvelle note
+Exec=calepin --new

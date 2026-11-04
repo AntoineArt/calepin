@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.antoineart.Calepin</id>
+  <name>Calepin</name>
+  <summary>Fast notes and text editing, with Markdown rendered as you type</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <developer id="io.github.antoineart">
+    <name>Antoine Artillan</name>
+  </developer>
+  <description>
+    <p>
+      Calepin is a small, native notepad for quick notes, reading and editing.
+      Tabs are saved continuously, so nothing is lost when the window closes,
+      even for notes never saved to a file.
+    </p>
+    <ul>
+      <li>Markdown rendered as you type: headings, emphasis, lists, tasks, quotes, code, links and tables</li>
+      <li>Formatting toolbar and keyboard shortcuts</li>
+      <li>Minimap with search results, smooth scrolling</li>
+      <li>Any text file opens in plain mode with syntax highlighting</li>
+      <li>Follows the desktop's light or dark style and accent colour, or the Omarchy theme</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.antoineart.Calepin.desktop</launchable>
+  <url type="homepage">https://github.com/AntoineArt/calepin</url>
+  <url type="bugtracker">https://github.com/AntoineArt/calepin/issues</url>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-11-04"/>
+  </releases>
+</component>

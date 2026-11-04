@@ -1,0 +1,43 @@
+# Flatpak build of Calepin.
+#   flatpak-builder --user --install --force-clean build-dir flatpak/io.github.antoineart.Calepin.yml
+# Regenerate cargo-sources.json after a dependency change:
+#   flatpak-cargo-generator.py Cargo.lock -o flatpak/cargo-sources.json
+id: io.github.antoineart.Calepin
+runtime: org.gnome.Platform
+runtime-version: '51'
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: calepin
+finish-args:
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  # Open, save and watch any text file given on the command line.
+  - --filesystem=home
+  # Omarchy integration on Hyprland: `hyprctl` runs on the host.
+  - --talk-name=org.freedesktop.Flatpak
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/calepin/cargo
+    CARGO_NET_OFFLINE: 'true'
+modules:
+  - name: calepin
+    buildsystem: simple
+    build-commands:
+      - cargo --offline build --release --locked
+      - install -Dm755 target/release/calepin /app/bin/calepin
+      - install -Dm644 data/io.github.antoineart.Calepin.desktop /app/share/applications/io.github.antoineart.Calepin.desktop
+      - install -Dm644 data/io.github.antoineart.Calepin.metainfo.xml /app/share/metainfo/io.github.antoineart.Calepin.metainfo.xml
+      - install -Dm644 assets/icon.svg /app/share/icons/hicolor/scalable/apps/io.github.antoineart.Calepin.svg
+    sources:
+      - type: dir
+        path: ..
+        skip:
+          - target
+          - build-dir
+          - .flatpak-builder
+          - .git
+      - cargo-sources.json

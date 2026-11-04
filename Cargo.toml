@@ -1,0 +1,21 @@
+[package]
+name = "calepin"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Fast native notepad: tabs never lost, Markdown rendered as you type"
+license = "MIT"
+repository = "https://github.com/AntoineArt/calepin"
+
+[dependencies]
+glib-unix = "0.22"
+gtk = { version = "0.11.5", package = "gtk4", features = ["v4_14"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sourceview5 = { version = "0.11.2", features = ["v5_10"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"
