@@ -53,6 +53,8 @@ pub struct Window {
     tab_scroller: gtk::ScrolledWindow,
     toolbar: gtk::Box,
     rich_buttons: RefCell<Vec<gtk::Widget>>,
+    /// Rendered/raw Markdown switch: only for Markdown tabs.
+    source_button: RefCell<Option<gtk::Button>>,
     count: gtk::Label,
     find_revealer: gtk::Revealer,
     find_entry: gtk::SearchEntry,
@@ -325,6 +327,7 @@ impl Window {
             tab_scroller,
             toolbar,
             rich_buttons: RefCell::new(Vec::new()),
+            source_button: RefCell::new(None),
             count,
             find_revealer,
             find_entry,
@@ -563,9 +566,7 @@ impl Window {
                 }
             });
         }
-        for b in self.rich_buttons.borrow().iter() {
-            b.set_sensitive(tab.markdown.get());
-        }
+        self.update_toolbar(&tab);
         self.update_count();
         self.win.set_title(Some(&self.title_for(&tab)));
         tab.view.grab_focus();
@@ -1311,6 +1312,7 @@ impl Window {
             }
         });
         self.toolbar.append(&src);
+        *self.source_button.borrow_mut() = Some(src);
         *self.rich_buttons.borrow_mut() = rich;
     }
 
@@ -1353,15 +1355,34 @@ impl Window {
         }
     }
 
+    /// Formatting needs the rich view; the source switch exists only for
+    /// Markdown (notes and .md files), and names what it switches to.
+    fn update_toolbar(&self, tab: &Tab) {
+        let rich = tab.markdown.get();
+        for b in self.rich_buttons.borrow().iter() {
+            b.set_sensitive(rich);
+        }
+        if let Some(b) = self.source_button.borrow().as_ref() {
+            let md = tab.path.borrow().as_ref().is_none_or(|p| is_markdown_path(p)) && !tab.readonly.get();
+            b.set_visible(md);
+            if let Some(l) = b.child().and_downcast::<gtk::Label>() {
+                l.set_text(if rich { "MD" } else { "Rendu" });
+            }
+            b.set_tooltip_text(Some(if rich {
+                "Afficher le Markdown brut (Ctrl+Maj+E)"
+            } else {
+                "Revenir au rendu (Ctrl+Maj+E)"
+            }));
+        }
+    }
+
     fn toggle_source(&self) {
         if let Some(t) = self.active_tab() {
             if t.path.borrow().as_ref().is_some_and(|p| !is_markdown_path(p)) && !t.markdown.get() {
                 return; // Not a Markdown file: stay in plain mode.
             }
             t.toggle_source();
-            for b in self.rich_buttons.borrow().iter() {
-                b.set_sensitive(t.markdown.get());
-            }
+            self.update_toolbar(&t);
             t.view.grab_focus();
         }
     }
