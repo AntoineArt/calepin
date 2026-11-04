@@ -7,6 +7,14 @@ pendant la frappe, tableaux, minimap. Pensé pour la lecture rapide, la prise de
 notes et l'édition rapide, pas comme un IDE. GTK4 + GtkSourceView 5, en Rust,
 sous licence MIT.
 
+<p align="center">
+  <img src="https://github.com/AntoineArt/calepin/releases/download/media/calepin-demo.gif"
+       alt="Démo : SUPER+N ouvre Calepin, le Markdown se met en forme pendant la frappe, tableau, recherche, changement de thème Omarchy à chaud"
+       width="760">
+  <br>
+  <sub><a href="https://github.com/AntoineArt/calepin/releases/download/media/calepin-demo.mp4">Vidéo en MP4</a></sub>
+</p>
+
 Il s'intègre à [Omarchy](https://omarchy.org) (thème et police suivis à chaud,
 bloc-notes sur SUPER+N), mais fonctionne sur tout bureau Linux récent.
 
