@@ -4,6 +4,7 @@ mod model;
 mod session;
 mod table;
 mod theme;
+mod update;
 mod window;
 
 use std::cell::RefCell;
@@ -47,6 +48,10 @@ pub fn mark(what: &str) {
 
 fn main() -> glib::ExitCode {
     START.get_or_init(std::time::Instant::now);
+    if std::env::args().any(|a| a == "--version" || a == "-V") {
+        println!("calepin {}", env!("CARGO_PKG_VERSION"));
+        return glib::ExitCode::SUCCESS;
+    }
     let app = gtk::Application::builder()
         .application_id(window::APP_ID)
         .flags(gio::ApplicationFlags::HANDLES_COMMAND_LINE)
@@ -71,6 +76,7 @@ fn main() -> glib::ExitCode {
             mark("first frame");
             glib::ControlFlow::Break
         });
+        schedule_update_check(&win);
         let mut background = false;
         // Where the result shows: the notes window, or a detached window
         // that already has the file.
@@ -82,7 +88,7 @@ fn main() -> glib::ExitCode {
                 // Session autostart: load everything, show nothing.
                 "--background" => background = true,
                 "-h" | "--help" => {
-                    println!("Usage: calepin [--new] [--background] [FICHIER…]");
+                    println!("Usage: calepin [--new] [--background] [--version] [FICHIER…]");
                 }
                 _ => {
                     if let Some(p) = cmd.create_file_for_arg(arg).path() {
@@ -120,6 +126,23 @@ fn main() -> glib::ExitCode {
     }
 
     app.run()
+}
+
+/// Once per process, a few seconds after start-up, off the main thread.
+fn schedule_update_check(win: &Rc<window::Window>) {
+    thread_local!(static DONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
+    if update::disabled() || DONE.with(|d| d.replace(true)) {
+        return;
+    }
+    let weak = Rc::downgrade(win);
+    glib::timeout_add_local_once(std::time::Duration::from_secs(4), move || {
+        glib::spawn_future_local(async move {
+            let Ok(outcome) = gio::spawn_blocking(update::check_and_update).await else { return };
+            if let Some(w) = weak.upgrade() {
+                w.show_update(outcome);
+            }
+        });
+    });
 }
 
 /// The window may sit on a hidden special workspace (the SUPER+N notes

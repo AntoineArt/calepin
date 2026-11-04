@@ -288,6 +288,8 @@ window.calepin .toolbar button:active {{ background: {ddbg}; }}
 window.calepin .toolbar button:disabled {{ color: {muted}; opacity: 0.5; }}
 window.calepin .toolbar .sep {{ background: {dbg}; min-width: 1px; margin: 4px 6px; }}
 window.calepin .toolbar .count {{ color: {muted}; font-size: 9pt; margin-left: 8px; }}
+window.calepin .updatebar {{ background: alpha({accent}, 0.14); padding: 6px 12px; border-bottom: 1px solid {dbg}; }}
+window.calepin .updatebar button {{ background: transparent; box-shadow: none; border: 1px solid alpha({accent}, 0.5); color: {fg}; border-radius: 6px; padding: 2px 10px; }}
 window.calepin .findbar {{ background: {dbg}; padding: 4px 10px; border-top: 1px solid {ddbg}; }}
 window.calepin .findbar entry {{ background: {bg}; color: {fg}; min-height: 26px; }}
 window.calepin .findbar button {{ background: transparent; box-shadow: none; border: none; color: {fg}; }}
@@ -453,8 +455,8 @@ pub fn watch(on_change: impl Fn(Theme) + 'static) -> Vec<gio::FileMonitor> {
             gio::DBusSignalFlags::NONE,
             move |_, _, _, _, _, _| on_change(Theme::load()),
         );
-        // Lives as long as the process.
-        std::mem::forget(id);
+        // The subscription lasts as long as the connection (the process).
+        let _ = id;
     }
     monitors
 }

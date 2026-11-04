@@ -1,0 +1,49 @@
+# Push a tag vX.Y.Z (matching Cargo.toml) to publish a release with the
+# Linux binary that Calepin's start-up update check downloads.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    # Ubuntu 24.04: GTK 4.14 and GtkSourceView 5.12, the oldest supported.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libgtksourceview-5-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Tag matches Cargo.toml
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          test "v$version" = "$GITHUB_REF_NAME"
+
+      - name: Test
+        run: cargo test --release --locked
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Package
+        run: |
+          cp target/release/calepin calepin-x86_64-linux
+          sha256sum calepin-x86_64-linux > calepin-x86_64-linux.sha256
+          ./calepin-x86_64-linux --version
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            calepin-x86_64-linux calepin-x86_64-linux.sha256 \
+            --title "Calepin ${GITHUB_REF_NAME#v}" --generate-notes

@@ -53,6 +53,9 @@ pub struct Window {
     tab_scroller: gtk::ScrolledWindow,
     toolbar: gtk::Box,
     rich_buttons: RefCell<Vec<gtk::Widget>>,
+    update_bar: gtk::Revealer,
+    update_label: gtk::Label,
+    update_button: RefCell<gtk::Button>,
     /// Rendered/raw Markdown switch: only for Markdown tabs.
     source_button: RefCell<Option<gtk::Button>>,
     count: gtk::Label,
@@ -309,6 +312,24 @@ impl Window {
             win.set_titlebar(Some(&handle));
         }
         root.append(&toolbar);
+        // Update notice (see update.rs).
+        let update_label = gtk::Label::new(None);
+        update_label.set_hexpand(true);
+        update_label.set_xalign(0.0);
+        update_label.set_wrap(true);
+        let update_button = gtk::Button::with_label("Redémarrer");
+        update_button.set_can_focus(false);
+        let update_close = gtk::Button::from_icon_name("window-close-symbolic");
+        update_close.set_can_focus(false);
+        let update_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        update_box.add_css_class("updatebar");
+        update_box.append(&update_label);
+        update_box.append(&update_button);
+        update_box.append(&update_close);
+        let update_bar = gtk::Revealer::builder().child(&update_box).reveal_child(false).build();
+        let ub = update_bar.clone();
+        update_close.connect_clicked(move |_| ub.set_reveal_child(false));
+        root.append(&update_bar);
         root.append(&stack);
         root.append(&find_revealer);
         win.set_child(Some(&root));
@@ -328,6 +349,9 @@ impl Window {
             toolbar,
             rich_buttons: RefCell::new(Vec::new()),
             source_button: RefCell::new(None),
+            update_bar,
+            update_label,
+            update_button: RefCell::new(update_button),
             count,
             find_revealer,
             find_entry,
@@ -1353,6 +1377,39 @@ impl Window {
             t.clear_format();
             t.view.grab_focus();
         }
+    }
+
+    /// Shows what the start-up update check found.
+    pub fn show_update(self: &Rc<Self>, outcome: crate::update::Outcome) {
+        use crate::update::Outcome;
+        let (text, button, action, page): (String, &str, u8, String) = match outcome {
+            Outcome::UpToDate => return,
+            Outcome::Installed(r) => (format!("Calepin {} est installé. Redémarrer pour l'utiliser (les onglets sont conservés).", r.version), "Redémarrer", 1, r.page),
+            Outcome::Available(r) => (format!("Calepin {} est disponible.", r.version), "Voir la version", 2, r.page),
+            Outcome::Failed(r, e) => (format!("Calepin {} est disponible, mais la mise à jour a échoué : {e}", r.version), "Voir la version", 2, r.page),
+        };
+        self.update_label.set_text(&text);
+        let weak = Rc::downgrade(self);
+        // A fresh button: one click handler at a time.
+        let b = self.update_button.borrow().clone();
+        let new = gtk::Button::with_label(button);
+        new.set_can_focus(false);
+        if let Some(parent) = b.parent().and_downcast::<gtk::Box>() {
+            parent.insert_child_after(&new, Some(&self.update_label));
+            parent.remove(&b);
+        }
+        *self.update_button.borrow_mut() = new.clone();
+        new.connect_clicked(move |_| {
+            let Some(w) = weak.upgrade() else { return };
+            if action == 1 {
+                w.flush();
+                let err = crate::update::restart();
+                w.error(&format!("Redémarrage impossible : {err}"));
+            } else {
+                crate::editor::launch_uri(&page);
+            }
+        });
+        self.update_bar.set_reveal_child(true);
     }
 
     /// Formatting needs the rich view; the source switch exists only for

@@ -38,11 +38,24 @@ distribution est plus ancien).
 ./install.sh   # binaire dans ~/.local/bin, entrée .desktop (« Ouvrir avec »), icône
 ```
 
+### Mises à jour
+
+Au lancement, Calepin regarde une fois s'il existe une version plus récente
+dans les [releases](https://github.com/AntoineArt/calepin/releases). Installé
+par `install.sh` (binaire dans `~/.local/bin`), il télécharge le nouveau
+binaire, vérifie son SHA-256, le met en place, puis propose de redémarrer (les
+onglets sont conservés). En Flatpak ou par un paquet système, il signale
+seulement la nouvelle version. `CALEPIN_NO_UPDATE=1` désactive la vérification.
+
+Publier une version : changer `version` dans `Cargo.toml`, puis pousser un tag
+`vX.Y.Z` ; le workflow `release.yml` compile le binaire et crée la release.
+
 ## Utilisation
 
 - `calepin` ouvre la fenêtre, `calepin fichier.md` ouvre le fichier dans
   l'instance déjà lancée (une seule instance), `calepin --new` ouvre un onglet
-  vide, `calepin --background` charge tout sans fenêtre (lancement de session).
+  vide, `calepin --background` charge tout sans fenêtre (lancement de session),
+  `calepin --version` affiche la version.
 - Fermer la fenêtre la cache seulement : le processus reste résident pour
   s'afficher instantanément. Ctrl+Q quitte vraiment.
 - Chaque onglet est enregistré en continu (`~/.local/state/calepin/`), même une

@@ -27,6 +27,11 @@
   <url type="bugtracker">https://github.com/AntoineArt/calepin/issues</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.2.0" date="2026-11-04">
+      <description>
+        <p>Start-up check for new releases, with in-place update when installed from source.</p>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-11-04"/>
   </releases>
 </component>
