@@ -31,7 +31,7 @@ modules:
       - install -Dm755 target/release/calepin /app/bin/calepin
       - install -Dm644 data/io.github.antoineart.Calepin.desktop /app/share/applications/io.github.antoineart.Calepin.desktop
       - install -Dm644 data/io.github.antoineart.Calepin.metainfo.xml /app/share/metainfo/io.github.antoineart.Calepin.metainfo.xml
-      - install -Dm644 assets/icon.svg /app/share/icons/hicolor/scalable/apps/io.github.antoineart.Calepin.svg
+      - install -Dm644 assets/icon.png /app/share/icons/hicolor/512x512/apps/io.github.antoineart.Calepin.png
     sources:
       - type: dir
         path: ..

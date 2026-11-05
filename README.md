@@ -1,26 +1,30 @@
-<img src="assets/icon.svg" width="64" height="64" alt="">
-
-# Calepin
-
-Bloc-notes natif et rapide pour Linux : onglets jamais perdus, Markdown rendu
-pendant la frappe, tableaux, minimap. Pensé pour la lecture rapide, la prise de
-notes et l'édition rapide, pas comme un IDE. GTK4 + GtkSourceView 5, en Rust,
-sous licence MIT.
-
 <p align="center">
-  <img src="https://github.com/AntoineArt/calepin/releases/download/media/calepin-demo.gif"
-       alt="Démo : SUPER+N ouvre Calepin, le Markdown se met en forme pendant la frappe, tableau, recherche, changement de thème Omarchy à chaud"
-       width="760">
-  <br>
-  <sub><a href="https://github.com/AntoineArt/calepin/releases/download/media/calepin-demo.mp4">Vidéo en MP4</a></sub>
+  <img src="assets/icon.png" width="128" height="128" alt="Calepin logo">
 </p>
 
-Il s'intègre à [Omarchy](https://omarchy.org) (thème et police suivis à chaud,
-bloc-notes sur SUPER+N), mais fonctionne sur tout bureau Linux récent.
+<h1 align="center">Calepin</h1>
 
-## Installer
+<p align="center">
+  A fast, native notepad for Linux: tabs that are never lost, Markdown rendered
+  as you type, tables, a minimap.<br>
+  Built for quick notes, reading and editing, not as an IDE. GTK4 +
+  GtkSourceView 5, written in Rust, MIT licensed.
+</p>
 
-### Flatpak (toutes distributions)
+<p align="center">
+  <img src="https://github.com/AntoineArt/calepin/releases/download/media/calepin-showcase.gif"
+       alt="Calepin showcase: Markdown rendering as you type, tables, search with minimap, live theme switching, tabs"
+       width="800">
+  <br>
+  <sub><a href="https://github.com/AntoineArt/calepin/releases/download/media/calepin-showcase.mp4">Watch in MP4</a></sub>
+</p>
+
+It follows the [Omarchy](https://omarchy.org) theme and font live, and runs on
+any recent Linux desktop.
+
+## Install
+
+### Flatpak (any distribution)
 
 ```bash
 flatpak install --user flathub org.gnome.Platform//51 org.gnome.Sdk//51 \
@@ -30,121 +34,115 @@ flatpak run org.flatpak.Builder --user --install --force-clean build-dir \
 flatpak run io.github.antoineart.Calepin
 ```
 
-Le Flatpak apporte ses propres GTK et GtkSourceView : il tourne aussi sur des
-distributions anciennes (Debian 12, Ubuntu 22.04).
+The Flatpak brings its own GTK and GtkSourceView, so it also runs on older
+distributions (Debian 12, Ubuntu 22.04).
 
-### Depuis les sources
+### From source
 
-Prérequis : GTK ≥ 4.14, GtkSourceView ≥ 5.10 (Arch, Fedora ≥ 40,
-Ubuntu ≥ 24.04…) et Rust ≥ 1.88 ([rustup](https://rustup.rs) si celui de la
-distribution est plus ancien).
+Requirements: GTK ≥ 4.14, GtkSourceView ≥ 5.10 (Arch, Fedora ≥ 40,
+Ubuntu ≥ 24.04…) and Rust ≥ 1.88 ([rustup](https://rustup.rs) if your
+distribution ships an older one).
 
 ```bash
-# Arch :          sudo pacman -S gtk4 gtksourceview5 rust
-# Fedora :        sudo dnf install gtk4-devel gtksourceview5-devel
-# Debian/Ubuntu : sudo apt install build-essential libgtk-4-dev libgtksourceview-5-dev
-./install.sh   # binaire dans ~/.local/bin, entrée .desktop (« Ouvrir avec »), icône
+# Arch:          sudo pacman -S gtk4 gtksourceview5 rust
+# Fedora:        sudo dnf install gtk4-devel gtksourceview5-devel
+# Debian/Ubuntu: sudo apt install build-essential libgtk-4-dev libgtksourceview-5-dev
+./install.sh   # binary in ~/.local/bin, desktop entry ("Open With"), icon
 ```
 
-### Mises à jour
+### Updates
 
-Au lancement, Calepin regarde une fois s'il existe une version plus récente
-dans les [releases](https://github.com/AntoineArt/calepin/releases). Installé
-par `install.sh` (binaire dans `~/.local/bin`), il télécharge le nouveau
-binaire, vérifie son SHA-256, le met en place, puis propose de redémarrer (les
-onglets sont conservés). En Flatpak ou par un paquet système, il signale
-seulement la nouvelle version. `CALEPIN_NO_UPDATE=1` désactive la vérification.
+At start-up, Calepin checks once for a newer version in the
+[releases](https://github.com/AntoineArt/calepin/releases). When installed with
+`install.sh` (binary in `~/.local/bin`), it downloads the new binary, verifies
+its SHA-256, swaps it in, then offers to restart (your tabs are kept). As a
+Flatpak or a system package, it only tells you a new version is out.
+`CALEPIN_NO_UPDATE=1` turns the check off.
 
-Publier une version : changer `version` dans `Cargo.toml`, puis pousser un tag
-`vX.Y.Z` ; le workflow `release.yml` compile le binaire et crée la release.
+To publish a version: bump `version` in `Cargo.toml`, then push a `vX.Y.Z`
+tag; the `release.yml` workflow builds the binary and creates the release.
 
-## Utilisation
+## Usage
 
-- `calepin` ouvre la fenêtre, `calepin fichier.md` ouvre le fichier dans
-  l'instance déjà lancée (une seule instance), `calepin --new` ouvre un onglet
-  vide, `calepin --background` charge tout sans fenêtre (lancement de session),
-  `calepin --version` affiche la version.
-- Fermer la fenêtre la cache seulement : le processus reste résident pour
-  s'afficher instantanément. Ctrl+Q quitte vraiment.
-- Chaque onglet est enregistré en continu (`~/.local/state/calepin/`), même une
-  note jamais enregistrée dans un fichier : fermer la fenêtre, éteindre ou
-  tuer le processus ne perd rien. Ctrl+Maj+T rouvre les 30 derniers onglets
-  fermés.
-- Onglets : rien pour une note jamais enregistrée ; une icône de fichier pour
-  un fichier enregistré ; l'icône en couleur d'accent et ● pour un fichier
-  modifié non enregistré. Fermer une note non enregistrée demande confirmation.
-- Les `.md` s'ouvrent en mode riche, tout autre fichier en texte brut avec
-  coloration syntaxique. Un fichier binaire ou non UTF-8 s'ouvre en lecture
-  seule.
-- Tirer un onglet hors de la barre d'onglets (sur le texte ou hors de la
-  fenêtre) l'ouvre dans une fenêtre à part ; le lâcher sur une barre d'onglets
-  le déplace ou le réordonne. Ctrl+Maj+D au clavier.
-- Thème : sur Omarchy, les couleurs du thème courant et la police monospace,
-  suivies à chaud. Ailleurs, le style clair ou sombre et la couleur d'accent du
-  bureau (portail XDG), suivis à chaud aussi.
-- Barre de titre : sous un gestionnaire en mosaïque (Hyprland, Sway, niri, i3…)
-  aucune ; ailleurs, la barre d'onglets sert de barre de titre.
-  `CALEPIN_DECORATIONS=1` ou `0` force le choix.
+- `calepin` opens the window, `calepin file.md` opens the file in the running
+  instance (single instance), `calepin --new` opens an empty tab,
+  `calepin --background` loads everything without showing a window (for
+  session autostart), `calepin --version` prints the version.
+- Closing the window only hides it: the process stays resident so it shows up
+  instantly next time. Ctrl+Q really quits.
+- Every tab is saved continuously (`~/.local/state/calepin/`), even a note
+  never saved to a file: closing the window, shutting down or killing the
+  process loses nothing. Ctrl+Shift+T reopens the last 30 closed tabs.
+- Tabs: nothing for a note never saved to a file; a file icon for a saved
+  file; the icon in the accent colour plus ● for a modified, unsaved file.
+  Closing an unsaved note asks for confirmation.
+- `.md` files open in rich mode, any other file as plain text with syntax
+  highlighting. A binary or non-UTF-8 file opens read-only.
+- Drag a tab out of the tab bar (onto the text or outside the window) to open
+  it in its own window; drop it on a tab bar to move or reorder it.
+  Ctrl+Shift+D from the keyboard.
+- Theme: on Omarchy, the current theme's colours and monospace font, followed
+  live. Elsewhere, the desktop's light or dark style and accent colour (XDG
+  portal), followed live too.
+- Title bar: none under a tiling window manager (Hyprland, Sway, niri, i3…);
+  elsewhere the tab bar doubles as the title bar. `CALEPIN_DECORATIONS=1` or
+  `0` forces either.
+- Language: English, or French when your locale is French (`LANG`,
+  `LC_MESSAGES`…). The translations are built into the binary.
+- Window titles: the main window's title starts with "Calepin", detached
+  windows' titles end with "— Calepin", so window manager rules can tell them
+  apart.
 
-## Saisie Markdown
+## Markdown input
 
-La syntaxe disparaît dès qu'elle est complète : `# ` `## ` `### ` titres,
-`- ` puces, `1. ` liste numérotée, `[] ` case à cocher, `> ` citation,
-` ``` ` + Entrée bloc de code, `**gras**`, `*italique*`, `~~barré~~`,
-`` `code` ``, `[texte](url)`, URL nues.
+Syntax disappears as soon as it is complete: `# ` `## ` `### ` headings,
+`- ` bullets, `1. ` numbered list, `[] ` checkbox, `> ` quote,
+` ``` ` + Enter code block, `**bold**`, `*italic*`, `~~strikethrough~~`,
+`` `code` ``, `[text](url)`, bare URLs.
 
-Tableaux : `| a | b |`, Entrée, `|---|---|`, Entrée (ou le bouton ▦,
-Ctrl+Alt+T). Tab et Maj+Tab passent de cellule en cellule, Tab sur la dernière
-cellule ajoute une ligne, Échap sort du tableau. Le texte des cellules passe à
-la ligne ; « ⇔ Élargir » laisse un tableau dépasser la colonne de texte.
+Tables: `| a | b |`, Enter, `|---|---|`, Enter (or the ▦ button,
+Ctrl+Alt+T). Tab and Shift+Tab move between cells, Tab on the last cell adds a
+row, Escape leaves the table. Cell text wraps; "⇔ Widen" lets a table extend
+past the text column.
 
-Entrée sur un élément de liste vide sort de la liste ; Retour arrière au début
-d'un titre ou d'une citation le remet en texte ; Tab et Maj+Tab indentent les
-listes. Clic sur une case pour la cocher, Ctrl+clic pour ouvrir un lien.
-Copier-coller passent par du Markdown ; Ctrl+Maj+V colle le texte brut.
-Ctrl+Z annule texte et mise en forme ensemble (l'historique garde le Markdown).
+Enter on an empty list item leaves the list; Backspace at the start of a
+heading or quote turns it back into text; Tab and Shift+Tab indent lists.
+Click a checkbox to tick it, Ctrl+click to open a link. Copy and paste go
+through Markdown; Ctrl+Shift+V pastes plain text. Ctrl+Z undoes text and
+formatting together (the history keeps the Markdown).
 
-## Raccourcis
+## Shortcuts
 
-| Action | Touches |
+| Action | Keys |
 |---|---|
-| Gras, italique, barré, code | Ctrl+B, Ctrl+I, Ctrl+Maj+X, Ctrl+E |
-| Lien | Ctrl+K |
-| Texte, titres 1-3 | Ctrl+Alt+0, Ctrl+Alt+1..3 |
-| Case, puces, numéros, code, citation | Ctrl+Alt+4, 5, 6, 8, Ctrl+Alt+Q |
-| Tableau | Ctrl+Alt+T |
-| Effacer la mise en forme | Ctrl+\ |
-| Annuler, rétablir | Ctrl+Z, Ctrl+Maj+Z (ou Ctrl+Y) |
-| Nouvel onglet, fermer, rouvrir | Ctrl+T (ou Ctrl+N), Ctrl+W, Ctrl+Maj+T |
-| Détacher l'onglet | Ctrl+Maj+D (ou glisser l'onglet hors de la barre) |
-| Onglet suivant / précédent | Ctrl+Tab, Ctrl+Maj+Tab, Ctrl+PgSuiv/PgPréc, Alt+1..9 |
-| Déplacer l'onglet | Ctrl+Maj+PgSuiv/PgPréc |
-| Ouvrir, enregistrer, enregistrer sous | Ctrl+O, Ctrl+S, Ctrl+Maj+S |
-| Rechercher (casse et accents ignorés) | Ctrl+F, Entrée / Maj+Entrée, F3, Échap |
-| Minimap, barre d'outils, source Markdown | Ctrl+M, Ctrl+Maj+F, Ctrl+Maj+E |
-| Zoom (retenu) | Ctrl+molette, Ctrl++, Ctrl+-, Ctrl+0 |
-| Quitter | Ctrl+Q |
+| Bold, italic, strikethrough, code | Ctrl+B, Ctrl+I, Ctrl+Shift+X, Ctrl+E |
+| Link | Ctrl+K |
+| Text, headings 1-3 | Ctrl+Alt+0, Ctrl+Alt+1..3 |
+| Checkbox, bullets, numbers, code, quote | Ctrl+Alt+4, 5, 6, 8, Ctrl+Alt+Q |
+| Table | Ctrl+Alt+T |
+| Clear formatting | Ctrl+\ |
+| Undo, redo | Ctrl+Z, Ctrl+Shift+Z (or Ctrl+Y) |
+| New tab, close, reopen | Ctrl+T (or Ctrl+N), Ctrl+W, Ctrl+Shift+T |
+| Detach tab | Ctrl+Shift+D (or drag the tab out of the bar) |
+| Next / previous tab | Ctrl+Tab, Ctrl+Shift+Tab, Ctrl+PgDown/PgUp, Alt+1..9 |
+| Move tab | Ctrl+Shift+PgDown/PgUp |
+| Open, save, save as | Ctrl+O, Ctrl+S, Ctrl+Shift+S |
+| Find (ignores case and accents) | Ctrl+F, Enter / Shift+Enter, F3, Escape |
+| Minimap, toolbar, Markdown source | Ctrl+M, Ctrl+Shift+F, Ctrl+Shift+E |
+| Zoom (remembered) | Ctrl+scroll, Ctrl++, Ctrl+-, Ctrl+0 |
+| Quit | Ctrl+Q |
 
-## Omarchy et Hyprland
-
-`extras/omarchy/` contient de quoi faire de Calepin le bloc-notes de SUPER+N :
-
-- `calepin-notes-toggle` : à copier dans `~/.local/bin`, montre ou cache les
-  notes sur l'espace spécial `notes` ;
-- `bindings.lua`, `windows.lua`, `autostart.lua` : les lignes à ajouter dans
-  les fichiers du même nom de `~/.config/hypr/` (raccourci, fenêtre flottante
-  et haute, lancement caché à l'ouverture de session).
-
-La fenêtre des notes se reconnaît à son titre, qui commence par « Calepin » ;
-les fenêtres d'onglets détachés finissent par « — Calepin ».
-
-## Développement
+## Development
 
 ```bash
-cargo test                  # modèle Markdown, recherche
+cargo test                  # Markdown model, search
 cargo build --release
-CALEPIN_TIMING=1 calepin    # étapes du démarrage
+CALEPIN_TIMING=1 calepin    # start-up timings
 ```
 
-Après un changement de dépendance, régénérer `flatpak/cargo-sources.json` avec
+After a dependency change, regenerate `flatpak/cargo-sources.json` with
 [`flatpak-cargo-generator.py`](https://github.com/flatpak/flatpak-builder-tools/tree/master/cargo).
+
+## License
+
+[MIT](LICENSE)

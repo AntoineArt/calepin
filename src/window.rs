@@ -12,6 +12,7 @@ use sourceview5::prelude::*;
 use crate::editor::{BlockCmd, Tab, TabRef};
 use crate::session::{self, Session, TabState};
 use crate::theme::{self, Theme};
+use crate::i18n::{tr, trf};
 
 pub const APP_ID: &str = "io.github.antoineart.Calepin";
 
@@ -34,9 +35,9 @@ fn show_state(h: &Header, path: Option<&Path>, dirty: bool) {
         h.file.remove_css_class("modified");
     }
     let tip = match path {
-        None => "Note non enregistrée dans un fichier (conservée par Calepin)".to_string(),
-        Some(p) if dirty => format!("{}\nModifié, non enregistré (Ctrl+S)", p.display()),
-        Some(p) => format!("{}\nEnregistré", p.display()),
+        None => tr("Note not saved to a file (kept by Calepin)").to_string(),
+        Some(p) if dirty => trf("{}\nModified, not saved (Ctrl+S)", &[&p.display()]),
+        Some(p) => trf("{}\nSaved", &[&p.display()]),
     };
     if h.root.tooltip_text().as_deref() != Some(tip.as_str()) {
         h.root.set_tooltip_text(Some(&tip));
@@ -75,7 +76,7 @@ pub struct Window {
     css: gtk::CssProvider,
     scheme: Rc<RefCell<Option<sourceview5::StyleScheme>>>,
     generation: Rc<Cell<u32>>,
-    /// A window holding tabs dragged out of the notes window.
+    /// A window holding tabs dragged out of the main window.
     pub detached: bool,
     flush_timer: RefCell<Option<glib::SourceId>>,
     changed: RefCell<HashSet<String>>,
@@ -92,7 +93,7 @@ thread_local! {
     static TAB_DROPPED: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Every open window, the notes window first.
+/// Every open window, the main window first.
 pub fn all_windows() -> Vec<WindowRef> {
     let mut v: Vec<WindowRef> = WINDOWS.with(|w| w.borrow().clone());
     v.sort_by_key(|w| w.detached);
@@ -137,8 +138,8 @@ pub fn host_command(args: &[&str]) -> std::process::Command {
     }
 }
 
-/// Hides the special workspace shown on the focused monitor (the SUPER+N
-/// notes), so that a new window lands on the regular workspace.
+/// Hyprland: hides the special workspace shown on the focused monitor, so
+/// that a window detached from it lands on the regular workspace.
 fn leave_special_workspace() {
     if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none() {
         return;
@@ -172,7 +173,7 @@ fn decode(bytes: &[u8]) -> (String, bool) {
     const PREVIEW: usize = 1 << 20;
     if bytes.len() > MAX {
         let mut s = String::from_utf8_lossy(&bytes[..PREVIEW]).replace('\0', "␀");
-        s.push_str("\n\n… (fichier tronqué : trop gros pour être édité)");
+        s.push_str(tr("\n\n… (file truncated: too large to edit)"));
         return (s, true);
     }
     let binary = bytes[..bytes.len().min(8192)].contains(&0);
@@ -184,6 +185,7 @@ fn decode(bytes: &[u8]) -> (String, bool) {
 }
 
 fn btn(label: &str, tooltip: &str, markup: bool) -> gtk::Button {
+    let (label, tooltip) = (tr(label), tr(tooltip));
     let l = gtk::Label::new(None);
     if markup {
         l.set_markup(label);
@@ -202,7 +204,7 @@ fn sep() -> gtk::Separator {
 }
 
 impl Window {
-    /// The notes window (SUPER+N): restores the session.
+    /// The main window: restores the session.
     pub fn new(app: &gtk::Application) -> WindowRef {
         let w = Self::build(app, None);
         crate::mark("widgets + css + scheme");
@@ -262,7 +264,7 @@ impl Window {
         bar.append(&tab_scroller);
         let new_btn = gtk::Button::with_label("+");
         new_btn.add_css_class("newtab");
-        new_btn.set_tooltip_text(Some("Nouvel onglet (Ctrl+T)"));
+        new_btn.set_tooltip_text(Some(tr("New tab (Ctrl+T)")));
         new_btn.set_can_focus(false);
         new_btn.set_valign(gtk::Align::End);
         bar.append(&new_btn);
@@ -285,14 +287,14 @@ impl Window {
         // Find bar
         let find_entry = gtk::SearchEntry::new();
         find_entry.set_hexpand(true);
-        find_entry.set_placeholder_text(Some("Rechercher"));
+        find_entry.set_placeholder_text(Some(tr("Find")));
         let find_label = gtk::Label::new(None);
         let find_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         find_box.add_css_class("findbar");
         let prev = gtk::Button::from_icon_name("go-up-symbolic");
-        prev.set_tooltip_text(Some("Précédent (Maj+Entrée)"));
+        prev.set_tooltip_text(Some(tr("Previous (Shift+Enter)")));
         let next = gtk::Button::from_icon_name("go-down-symbolic");
-        next.set_tooltip_text(Some("Suivant (Entrée)"));
+        next.set_tooltip_text(Some(tr("Next (Enter)")));
         let close = gtk::Button::from_icon_name("window-close-symbolic");
         find_box.append(&find_entry);
         find_box.append(&find_label);
@@ -317,7 +319,7 @@ impl Window {
         update_label.set_hexpand(true);
         update_label.set_xalign(0.0);
         update_label.set_wrap(true);
-        let update_button = gtk::Button::with_label("Redémarrer");
+        let update_button = gtk::Button::with_label(tr("Restart"));
         update_button.set_can_focus(false);
         let update_close = gtk::Button::from_icon_name("window-close-symbolic");
         update_close.set_can_focus(false);
@@ -508,8 +510,8 @@ impl Window {
     // Tabs
     // -----------------------------------------------------------------------
 
-    /// The notes window's title starts with "Calepin": the Hyprland rule
-    /// that floats it on the notes workspace matches on that.
+    /// The main window's title starts with "Calepin", detached windows'
+    /// titles end with it: window manager rules can tell them apart.
     fn title_for(&self, tab: &Tab) -> String {
         if self.detached { format!("{} — Calepin", tab.title()) } else { format!("Calepin — {}", tab.title()) }
     }
@@ -618,7 +620,7 @@ impl Window {
             let close = gtk::Button::from_icon_name("window-close-symbolic");
             close.add_css_class("close");
             close.set_can_focus(false);
-            close.set_tooltip_text(Some("Fermer (Ctrl+W)"));
+            close.set_tooltip_text(Some(tr("Close (Ctrl+W)")));
             root.append(&file);
             root.append(&label);
             root.append(&dirty);
@@ -748,7 +750,7 @@ impl Window {
     }
 
     /// After a tab left this window: show a neighbour, or close an empty
-    /// detached window (the notes window always keeps a tab).
+    /// detached window (the main window always keeps a tab).
     fn after_removal(self: &Rc<Self>, idx: usize) {
         if self.tabs.borrow().is_empty() {
             if self.detached {
@@ -820,7 +822,7 @@ impl Window {
             return;
         }
         let Some(id) = self.tabs.borrow().get(idx).map(|t| t.id.clone()) else { return };
-        // The notes workspace would otherwise receive the new window.
+        // A special workspace would otherwise receive the new window.
         leave_special_workspace();
         let w = Window::new_detached(self);
         w.move_tab_here(&id, None);
@@ -838,9 +840,9 @@ impl Window {
         }
         let dialog = gtk::AlertDialog::builder()
             .modal(true)
-            .message(if unsaved == 1 { "Un onglet n'est pas enregistré dans un fichier".to_string() } else { format!("{unsaved} onglets ne sont pas enregistrés dans un fichier") })
-            .detail("Remettre dans les notes garde tous les onglets dans la fenêtre de SUPER+N. Fermés, ils restent récupérables avec Ctrl+Maj+T.")
-            .buttons(["Annuler", "Fermer sans enregistrer", "Remettre dans les notes"])
+            .message(if unsaved == 1 { tr("A tab is not saved to a file").to_string() } else { trf("{} tabs are not saved to a file", &[&unsaved]) })
+            .detail(tr("Move to main window keeps every tab in the main Calepin window. Closed tabs can still be reopened with Ctrl+Shift+T."))
+            .buttons([tr("Cancel"), tr("Close without saving"), tr("Move to main window")])
             .cancel_button(0)
             .default_button(2)
             .build();
@@ -1056,7 +1058,7 @@ impl Window {
 
     fn write_file(self: &Rc<Self>, tab: &TabRef, path: PathBuf) -> bool {
         if tab.readonly.get() {
-            self.error("Ce fichier n'est pas du texte UTF-8 : il est ouvert en lecture seule.");
+            self.error(tr("This file is not UTF-8 text: it is open read-only."));
             return false;
         }
         let content = tab.content();
@@ -1076,7 +1078,7 @@ impl Window {
                 true
             }
             Err(e) => {
-                self.error(&format!("Impossible d'enregistrer : {e}"));
+                self.error(&trf("Cannot save: {}", &[&e]));
                 false
             }
         }
@@ -1108,7 +1110,7 @@ impl Window {
             Some(p) => p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
             None => {
                 let t: String = tab.title().chars().filter(|c| !matches!(c, '/' | '\\' | ':' | '…')).collect();
-                format!("{}.md", if t == "Nouvelle note" { "note".into() } else { t.trim().to_string() })
+                format!("{}.md", if t == tr("New note") { "note".into() } else { t.trim().to_string() })
             }
         };
         dialog.set_initial_name(Some(&name));
@@ -1146,15 +1148,15 @@ impl Window {
         self.activate(idx);
         let never = tab.path.borrow().is_none();
         let detail = if never {
-            "Cette note n'a jamais été enregistrée dans un fichier. Fermée sans enregistrer, elle reste récupérable avec Ctrl+Maj+T."
+            tr("This note was never saved to a file. Closed without saving, it can still be reopened with Ctrl+Shift+T.")
         } else {
-            "Les modifications ne sont pas enregistrées dans le fichier. Fermé sans enregistrer, l'onglet reste récupérable avec Ctrl+Maj+T."
+            tr("The changes are not saved to the file. Closed without saving, the tab can still be reopened with Ctrl+Shift+T.")
         };
         let dialog = gtk::AlertDialog::builder()
             .modal(true)
-            .message(format!("Enregistrer « {} » avant de fermer ?", tab.title()))
+            .message(trf("Save “{}” before closing?", &[&tab.title()]))
             .detail(detail)
-            .buttons(["Annuler", "Fermer sans enregistrer", if never { "Enregistrer…" } else { "Enregistrer" }])
+            .buttons([tr("Cancel"), tr("Close without saving"), tr(if never { "Save…" } else { "Save" })])
             .cancel_button(0)
             .default_button(2)
             .build();
@@ -1258,8 +1260,8 @@ impl Window {
         self.update_count();
     }
 
-    /// The session of every window: the notes window's tabs, and the
-    /// detached ones (back in the notes at the next start).
+    /// The session of every window: the main window's tabs, and the
+    /// detached ones (back in the main window at the next start).
     fn save_session(&self) {
         let wins = all_windows();
         let main = wins.iter().find(|w| !w.detached);
@@ -1279,7 +1281,7 @@ impl Window {
     fn update_count(&self) {
         if let Some(t) = self.active_tab() {
             let n = t.word_count();
-            self.count.set_text(&format!("{n} mot{}", if n > 1 { "s" } else { "" }));
+            self.count.set_text(&trf(crate::i18n::plural(n, "{} word", "{} words"), &[&n]));
         }
     }
 
@@ -1291,25 +1293,25 @@ impl Window {
         let mut rich: Vec<gtk::Widget> = Vec::new();
         type Cmd = fn(&Rc<Window>);
         let items: Vec<Option<(&str, &str, bool, Cmd)>> = vec![
-            Some(("Texte", "Texte normal (Ctrl+Alt+0)", false, |w| w.block(BlockCmd::Para))),
-            Some(("H1", "Titre 1 (Ctrl+Alt+1)", false, |w| w.block(BlockCmd::Heading(1)))),
-            Some(("H2", "Titre 2 (Ctrl+Alt+2)", false, |w| w.block(BlockCmd::Heading(2)))),
-            Some(("H3", "Titre 3 (Ctrl+Alt+3)", false, |w| w.block(BlockCmd::Heading(3)))),
+            Some(("Text", "Normal text (Ctrl+Alt+0)", false, |w| w.block(BlockCmd::Para))),
+            Some(("H1", "Heading 1 (Ctrl+Alt+1)", false, |w| w.block(BlockCmd::Heading(1)))),
+            Some(("H2", "Heading 2 (Ctrl+Alt+2)", false, |w| w.block(BlockCmd::Heading(2)))),
+            Some(("H3", "Heading 3 (Ctrl+Alt+3)", false, |w| w.block(BlockCmd::Heading(3)))),
             None,
-            Some(("<b>B</b>", "Gras (Ctrl+B)", true, |w| w.inline("b"))),
-            Some(("<i>I</i>", "Italique (Ctrl+I)", true, |w| w.inline("i"))),
-            Some(("<s>S</s>", "Barré (Ctrl+Maj+X)", true, |w| w.inline("s"))),
+            Some(("<b>B</b>", "Bold (Ctrl+B)", true, |w| w.inline("b"))),
+            Some(("<i>I</i>", "Italic (Ctrl+I)", true, |w| w.inline("i"))),
+            Some(("<s>S</s>", "Strikethrough (Ctrl+Shift+X)", true, |w| w.inline("s"))),
             Some(("&lt;/&gt;", "Code (Ctrl+E)", true, |w| w.inline("code"))),
-            Some(("Lien", "Lien (Ctrl+K)", false, |w| w.link_popover())),
+            Some(("Link", "Link (Ctrl+K)", false, |w| w.link_popover())),
             None,
-            Some(("•", "Liste à puces (Ctrl+Alt+5)", false, |w| w.block(BlockCmd::Bullet))),
-            Some(("1.", "Liste numérotée (Ctrl+Alt+6)", false, |w| w.block(BlockCmd::Numbered))),
-            Some(("☐", "Case à cocher (Ctrl+Alt+4)", false, |w| w.block(BlockCmd::Check))),
-            Some(("❝", "Citation (Ctrl+Alt+Q)", false, |w| w.block(BlockCmd::Quote))),
-            Some(("{ }", "Bloc de code (Ctrl+Alt+8)", false, |w| w.block(BlockCmd::Code))),
-            Some(("▦", "Tableau (Ctrl+Alt+T)", false, |w| w.table())),
+            Some(("•", "Bulleted list (Ctrl+Alt+5)", false, |w| w.block(BlockCmd::Bullet))),
+            Some(("1.", "Numbered list (Ctrl+Alt+6)", false, |w| w.block(BlockCmd::Numbered))),
+            Some(("☐", "Checkbox (Ctrl+Alt+4)", false, |w| w.block(BlockCmd::Check))),
+            Some(("❝", "Quote (Ctrl+Alt+Q)", false, |w| w.block(BlockCmd::Quote))),
+            Some(("{ }", "Code block (Ctrl+Alt+8)", false, |w| w.block(BlockCmd::Code))),
+            Some(("▦", "Table (Ctrl+Alt+T)", false, |w| w.table())),
             None,
-            Some(("T̶x", "Effacer la mise en forme (Ctrl+\\)", false, |w| w.clear())),
+            Some(("T̶x", "Clear formatting (Ctrl+\\)", false, |w| w.clear())),
         ];
         for item in items {
             match item {
@@ -1328,7 +1330,7 @@ impl Window {
             }
         }
         self.toolbar.append(&self.count);
-        let src = btn("MD", "Mode source Markdown (Ctrl+Maj+E)", false);
+        let src = btn("MD", "Show the raw Markdown (Ctrl+Shift+E)", false);
         let weak = Rc::downgrade(self);
         src.connect_clicked(move |_| {
             if let Some(w) = weak.upgrade() {
@@ -1384,9 +1386,9 @@ impl Window {
         use crate::update::Outcome;
         let (text, button, action, page): (String, &str, u8, String) = match outcome {
             Outcome::UpToDate => return,
-            Outcome::Installed(r) => (format!("Calepin {} est installé. Redémarrer pour l'utiliser (les onglets sont conservés).", r.version), "Redémarrer", 1, r.page),
-            Outcome::Available(r) => (format!("Calepin {} est disponible.", r.version), "Voir la version", 2, r.page),
-            Outcome::Failed(r, e) => (format!("Calepin {} est disponible, mais la mise à jour a échoué : {e}", r.version), "Voir la version", 2, r.page),
+            Outcome::Installed(r) => (trf("Calepin {} is installed. Restart to use it (your tabs are kept).", &[&r.version]), tr("Restart"), 1, r.page),
+            Outcome::Available(r) => (trf("Calepin {} is available.", &[&r.version]), tr("View release"), 2, r.page),
+            Outcome::Failed(r, e) => (trf("Calepin {} is available, but the update failed: {}", &[&r.version, &e]), tr("View release"), 2, r.page),
         };
         self.update_label.set_text(&text);
         let weak = Rc::downgrade(self);
@@ -1404,7 +1406,7 @@ impl Window {
             if action == 1 {
                 w.flush();
                 let err = crate::update::restart();
-                w.error(&format!("Redémarrage impossible : {err}"));
+                w.error(&trf("Cannot restart: {}", &[&err]));
             } else {
                 crate::editor::launch_uri(&page);
             }
@@ -1413,7 +1415,7 @@ impl Window {
     }
 
     /// Formatting needs the rich view; the source switch exists only for
-    /// Markdown (notes and .md files), and names what it switches to.
+    /// Markdown (unsaved notes and .md files), and names what it switches to.
     fn update_toolbar(&self, tab: &Tab) {
         let rich = tab.markdown.get();
         for b in self.rich_buttons.borrow().iter() {
@@ -1423,13 +1425,13 @@ impl Window {
             let md = tab.path.borrow().as_ref().is_none_or(|p| is_markdown_path(p)) && !tab.readonly.get();
             b.set_visible(md);
             if let Some(l) = b.child().and_downcast::<gtk::Label>() {
-                l.set_text(if rich { "MD" } else { "Rendu" });
+                l.set_text(if rich { "MD" } else { tr("Rich") });
             }
-            b.set_tooltip_text(Some(if rich {
-                "Afficher le Markdown brut (Ctrl+Maj+E)"
+            b.set_tooltip_text(Some(tr(if rich {
+                "Show the raw Markdown (Ctrl+Shift+E)"
             } else {
-                "Revenir au rendu (Ctrl+Maj+E)"
-            }));
+                "Back to the rendered view (Ctrl+Shift+E)"
+            })));
         }
     }
 
@@ -1450,7 +1452,7 @@ impl Window {
             return;
         }
         let entry = gtk::Entry::new();
-        entry.set_placeholder_text(Some("https://… (vide pour retirer)"));
+        entry.set_placeholder_text(Some(tr("https://… (empty to remove)")));
         entry.set_width_chars(36);
         if let Some(u) = tab.current_link() {
             entry.set_text(&u);
@@ -1650,7 +1652,7 @@ impl Window {
         }
         let n = hits.len();
         self.find_label.set_text(&match cur {
-            _ if n == 0 => "Aucun résultat".to_string(),
+            _ if n == 0 => tr("No results").to_string(),
             Some(i) => format!("{}/{n}", i + 1),
             None => format!("{n}"),
         });

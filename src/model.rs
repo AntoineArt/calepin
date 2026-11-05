@@ -58,7 +58,7 @@ pub struct Table {
 impl Table {
     pub fn new(cols: usize, rows: usize) -> Table {
         Table {
-            header: (1..=cols).map(|i| format!("Colonne {i}")).collect(),
+            header: (1..=cols).map(|i| crate::i18n::trf("Column {}", &[&i])).collect(),
             align: vec![Align::None; cols],
             rows: vec![vec![String::new(); cols]; rows],
             raw: None,
@@ -770,13 +770,13 @@ mod tests {
 
     #[test]
     fn round_trips() {
-        rt("# Titre\n\nUn **gras** et *italique* et ~~barré~~ et `code`.");
+        rt("# Title\n\nSome **bold** and *italic* and ~~struck~~ and `code`.");
         rt("- a\n- b\n  - c\n* d\n+ e");
-        rt("1. un\n2. deux\n10) dix");
-        rt("- [ ] à faire\n- [x] fait");
+        rt("1. one\n2. two\n10) ten");
+        rt("- [ ] to do\n- [x] done");
         rt("> citation\n>");
         rt("```rust\nfn main() { *x* }\n```\napres");
-        rt("Voir [le site](https://example.com) ou https://omarchy.org.");
+        rt("See [the site](https://example.com) or https://omarchy.org.");
         rt("snake_case et 2 * 3");
         rt("");
         rt("a\n");
@@ -795,13 +795,13 @@ mod tests {
 
     #[test]
     fn serialize_model_escapes() {
-        let line = Line::plain(Block::Para, "# pas un titre *ni gras*");
+        let line = Line::plain(Block::Para, "# not a heading *nor bold*");
         let s = serialize_line(&line);
         assert_eq!(parse(&s)[0], line, "{s}");
-        let line = Line::plain(Block::Para, "1. pas une liste");
+        let line = Line::plain(Block::Para, "1. not a list");
         let s = serialize_line(&line);
         assert_eq!(parse(&s)[0], line, "{s}");
-        let line = Line::plain(Block::Para, "https://x.org en texte brut");
+        let line = Line::plain(Block::Para, "https://x.org as plain text");
         let s = serialize_line(&line);
         assert_eq!(parse(&s)[0], line, "{s}");
     }

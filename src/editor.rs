@@ -2063,7 +2063,7 @@ impl Tab {
                 break;
             }
         }
-        "Nouvelle note".into()
+        crate::i18n::tr("New note").into()
     }
 
     pub fn is_empty(&self) -> bool {

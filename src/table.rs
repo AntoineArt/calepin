@@ -40,8 +40,8 @@ pub struct TableView {
 }
 
 fn small_button(label: &str, tip: &str) -> gtk::Button {
-    let b = gtk::Button::with_label(label);
-    b.set_tooltip_text(Some(tip));
+    let b = gtk::Button::with_label(crate::i18n::tr(label));
+    b.set_tooltip_text(Some(crate::i18n::tr(tip)));
     b.set_can_focus(false);
     b.set_focus_on_click(false);
     b
@@ -105,6 +105,55 @@ fn render_cell(b: &gtk::TextBuffer, md: &str, colors: &CellColors) {
         let refs: Vec<&str> = names.iter().map(String::as_str).collect();
         b.insert_with_tags_by_name(&mut it, &span.text, &refs);
     }
+}
+
+/// `**bold**`, `*italic*`, `~~strike~~` or `` `code` `` just typed before
+/// the cursor: the markers go, the text between them takes the style.
+fn apply_typed_markup(b: &gtk::TextBuffer, colors: &CellColors) -> bool {
+    let cur = b.iter_at_mark(&b.get_insert());
+    if cur.tags().iter().any(|t| t.name().as_deref() == Some("code")) {
+        return false;
+    }
+    let before: Vec<char> = b.text(&b.start_iter(), &cur, false).chars().collect();
+    let len = before.len();
+    for (mk, tag) in [("**", "b"), ("~~", "s"), ("*", "i"), ("`", "code")] {
+        let m: Vec<char> = mk.chars().collect();
+        let n = m.len();
+        if len < 2 * n + 1 || before[len - n..] != m[..] {
+            continue;
+        }
+        let single_star = mk == "*";
+        if single_star && before[len - 2] == '*' {
+            continue;
+        }
+        let close = len - n;
+        // The nearest opening marker before the closing one.
+        let mut open = None;
+        let mut i = close;
+        while i > n {
+            i -= 1;
+            if before[i - n..i] == m[..] && !(single_star && (before.get(i).copied() == Some('*') || (i >= 2 && before[i - 2] == '*'))) {
+                open = Some(i - n);
+                break;
+            }
+        }
+        let Some(o) = open else { continue };
+        let inner = &before[o + n..close];
+        if inner.is_empty() || inner[0] == ' ' || inner[inner.len() - 1] == ' ' {
+            continue;
+        }
+        let (o, close) = (o as i32, close as i32);
+        let (n, len) = (n as i32, len as i32);
+        let (mut s, mut e) = (b.iter_at_offset(close), b.iter_at_offset(len));
+        b.delete(&mut s, &mut e);
+        let (mut s, mut e) = (b.iter_at_offset(o), b.iter_at_offset(o + n));
+        b.delete(&mut s, &mut e);
+        ensure_tag(b, tag, colors);
+        let (s, e) = (b.iter_at_offset(o), b.iter_at_offset(close - n));
+        b.apply_tag_by_name(tag, &s, &e);
+        return true;
+    }
+    false
 }
 
 fn style_at(it: &gtk::TextIter) -> Style {
@@ -201,7 +250,7 @@ impl TableView {
             scroller,
             grid,
             controls,
-            wide_button: small_button("⇔ Élargir", "Laisser le tableau dépasser la colonne de texte"),
+            wide_button: small_button("⇔ Widen", "Let the table extend past the text column"),
             cells: RefCell::new(Vec::new()),
             focus: Cell::new((0, 0)),
             wide: Cell::new(wide),
@@ -229,11 +278,11 @@ impl TableView {
 
         type Act = fn(&Rc<TableView>);
         let actions: [(&str, &str, Act); 5] = [
-            ("+ ligne", "Ajouter une ligne sous la cellule (Tab sur la dernière cellule)", |t| t.add_row()),
-            ("+ colonne", "Ajouter une colonne à droite", |t| t.add_col()),
-            ("− ligne", "Supprimer la ligne", |t| t.del_row()),
-            ("− colonne", "Supprimer la colonne", |t| t.del_col()),
-            ("Supprimer le tableau", "Supprimer le tableau", |t| {
+            ("+ row", "Add a row below the cell (Tab on the last cell)", |t| t.add_row()),
+            ("+ column", "Add a column to the right", |t| t.add_col()),
+            ("− row", "Delete the row", |t| t.del_row()),
+            ("− column", "Delete the column", |t| t.del_col()),
+            ("Delete table", "Delete the table", |t| {
                 let cb = t.on_delete.borrow().clone();
                 if let Some(cb) = cb {
                     cb();
@@ -281,7 +330,7 @@ impl TableView {
     }
 
     fn update_wide_button(&self) {
-        self.wide_button.set_label(if self.wide.get() { "⇔ Réduire" } else { "⇔ Élargir" });
+        self.wide_button.set_label(crate::i18n::tr(if self.wide.get() { "⇔ Narrow" } else { "⇔ Widen" }));
     }
 
     /// Widths the table may use: within the text column, and when wide.
@@ -374,13 +423,29 @@ impl TableView {
                 tv.set_right_margin(8);
                 render_cell(&tv.buffer(), &self.cell(r, c), &self.colors.get());
                 // Typed text takes the style of the character before it.
-                tv.buffer().connect_local("insert-text", true, |args| {
+                let weak = Rc::downgrade(self);
+                // Right after a closed span, typing goes on unstyled.
+                let plain_next = Rc::new(Cell::new(false));
+                tv.buffer().connect_local("insert-text", true, move |args| {
                     let b = args[0].get::<gtk::TextBuffer>().ok()?;
                     let end = args[1].get::<gtk::TextIter>().ok()?;
                     let text = args[2].get::<String>().ok()?;
+                    if matches!(text.as_str(), "*" | "~" | "`") {
+                        // A closing marker: render what it closes, as in the text.
+                        let (b, weak, plain_next) = (b.clone(), weak.clone(), plain_next.clone());
+                        glib::idle_add_local_once(move || {
+                            if let Some(t) = weak.upgrade() {
+                                plain_next.set(apply_typed_markup(&b, &t.colors.get()));
+                            }
+                        });
+                    }
                     let n = text.chars().count() as i32;
                     let start = b.iter_at_offset(end.offset() - n);
-                    if start.offset() > 0 {
+                    if plain_next.replace(false) {
+                        for tag in start.tags() {
+                            b.remove_tag(&tag, &start, &end);
+                        }
+                    } else if start.offset() > 0 {
                         let mut prev = start;
                         prev.backward_char();
                         for tag in prev.tags() {
@@ -697,7 +762,7 @@ impl TableView {
             let mut d = self.data.borrow_mut();
             let at = (c + 1).min(d.cols());
             let n = d.cols() + 1;
-            d.header.insert(at, format!("Colonne {n}"));
+            d.header.insert(at, crate::i18n::trf("Column {}", &[&n]));
             d.align.insert(at, Align::None);
             for row in d.rows.iter_mut() {
                 row.insert(at, String::new());

@@ -1,5 +1,6 @@
 mod editor;
 mod find;
+mod i18n;
 mod model;
 mod session;
 mod table;
@@ -15,7 +16,7 @@ use gtk::{gio, glib, prelude::*};
 thread_local! {
     static WINDOW: RefCell<Option<Rc<window::Window>>> = const { RefCell::new(None) };
     /// The process stays resident: closing the window only hides it, so the
-    /// next SUPER+N shows it at once.
+    /// next launch shows it at once.
     static HOLD: RefCell<Option<gio::ApplicationHoldGuard>> = const { RefCell::new(None) };
 }
 
@@ -78,7 +79,7 @@ fn main() -> glib::ExitCode {
         });
         schedule_update_check(&win);
         let mut background = false;
-        // Where the result shows: the notes window, or a detached window
+        // Where the result shows: the main window, or a detached window
         // that already has the file.
         let mut target = win.clone();
         for arg in cmd.arguments().iter().skip(1) {
@@ -88,7 +89,7 @@ fn main() -> glib::ExitCode {
                 // Session autostart: load everything, show nothing.
                 "--background" => background = true,
                 "-h" | "--help" => {
-                    println!("Usage: calepin [--new] [--background] [--version] [FICHIER…]");
+                    println!("Usage: calepin [--new] [--background] [--version] [FILE…]");
                 }
                 _ => {
                     if let Some(p) = cmd.create_file_for_arg(arg).path() {
@@ -145,13 +146,13 @@ fn schedule_update_check(win: &Rc<window::Window>) {
     });
 }
 
-/// The window may sit on a hidden special workspace (the SUPER+N notes
-/// scratchpad): ask Hyprland to focus it, which shows that workspace.
+/// The window may sit on a hidden special workspace (a scratchpad): ask
+/// Hyprland to focus it, which shows that workspace.
 fn reveal_on_hyprland() {
     if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none() {
         return;
     }
-    // The notes window is the one whose title starts with "Calepin".
+    // The main window is the one whose title starts with "Calepin".
     let expr = "hl.dsp.focus({ window = \"title:^Calepin.*$\" })".to_string();
     // In the background: the window shows meanwhile.
     std::thread::spawn(move || {
