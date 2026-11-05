@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <img src="https://github.com/AntoineArt/calepin/releases/download/media/calepin-showcase.gif"
+  <img src="https://github.com/AntoineArt/calepin/releases/download/media/calepin-showcase.webp"
        alt="Calepin showcase: Markdown rendering as you type, tables, search with minimap, live theme switching, tabs"
        width="800">
   <br>
