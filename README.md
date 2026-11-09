@@ -78,6 +78,12 @@ tag; the `release.yml` workflow builds the binary and creates the release.
   Closing an unsaved note asks for confirmation.
 - `.md` files open in rich mode, any other file as plain text with syntax
   highlighting. A binary or non-UTF-8 file opens read-only.
+- `.csv` and `.tsv` files open as an editable table (the first row is the
+  header; the separator, `,` `;` tab or `|`, is detected) and are saved back
+  as CSV, with their separator and line endings. A file left untouched is
+  written back byte for byte. The CSV/Table button (Ctrl+Shift+E) shows the
+  raw text. A field spanning several lines, an unclosed quote or more than
+  20,000 cells keeps the file in plain text.
 - Drag a tab out of the tab bar (onto the text or outside the window) to open
   it in its own window; drop it on a tab bar to move or reorder it.
   Ctrl+Shift+D from the keyboard.

@@ -117,6 +117,9 @@ const FR: &[(&str, &str)] = &[
     ("Rich", "Rendu"),
     ("Show the raw Markdown (Ctrl+Shift+E)", "Afficher le Markdown brut (Ctrl+Maj+E)"),
     ("Back to the rendered view (Ctrl+Shift+E)", "Revenir au rendu (Ctrl+Maj+E)"),
+    ("Table", "Tableau"),
+    ("Show the raw CSV (Ctrl+Shift+E)", "Afficher le CSV brut (Ctrl+Maj+E)"),
+    ("Back to the table (Ctrl+Shift+E)", "Revenir au tableau (Ctrl+Maj+E)"),
     ("https://… (empty to remove)", "https://… (vide pour retirer)"),
     // Tables
     ("Column {}", "Colonne {}"),

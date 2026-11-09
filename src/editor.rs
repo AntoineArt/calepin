@@ -104,6 +104,8 @@ pub struct Tab {
     /// Deleted tables, restored when an undo brings their anchor back.
     graveyard: RefCell<Vec<Table>>,
     pub readonly: Cell<bool>,
+    /// Set while a CSV file is shown as a table.
+    pub csv: RefCell<Option<crate::csv::Sheet>>,
     me: RefCell<std::rc::Weak<Tab>>,
     /// Smooth wheel scrolling: where the animation is heading.
     scroll_target: Cell<Option<f64>>,
@@ -244,6 +246,7 @@ impl Tab {
             restoring: Cell::new(false),
             graveyard: RefCell::new(Vec::new()),
             readonly: Cell::new(false),
+            csv: RefCell::new(None),
             me: RefCell::new(std::rc::Weak::new()),
             scroll_target: Cell::new(None),
             scroll_clock: Cell::new(0),
@@ -1834,6 +1837,11 @@ impl Tab {
     }
 
     pub fn content(&self) -> String {
+        if let Some(sheet) = self.csv.borrow().as_ref() {
+            let (s, e) = self.buffer.bounds();
+            let rows = crate::csv::rows_of(&self.model_range(s.offset(), e.offset()));
+            return if rows == sheet.baseline { sheet.text.clone() } else { crate::csv::write(&rows, sheet.format) };
+        }
         if self.markdown.get() {
             self.to_markdown()
         } else {
@@ -1925,9 +1933,60 @@ impl Tab {
     }
 
     /// Replaces the whole buffer (not undoable).
+    /// A CSV file asked in rich mode shows as a table, or as plain text when
+    /// a table cannot hold it.
     pub fn set_content(&self, text: &str, markdown: bool) {
-        self.render_content(text, markdown);
+        *self.csv.borrow_mut() = None;
+        let kind = self.path.borrow().as_deref().and_then(crate::csv::kind);
+        match kind {
+            Some(delim) if markdown => {
+                let delim = delim.unwrap_or_else(|| crate::csv::guess_delimiter(text));
+                match crate::csv::to_markdown(text, delim) {
+                    Some(md) => {
+                        self.render_content(&md, true);
+                        let (s, e) = self.buffer.bounds();
+                        let baseline = crate::csv::rows_of(&self.model_range(s.offset(), e.offset()));
+                        let format = crate::csv::format_of(text, delim);
+                        *self.csv.borrow_mut() = Some(crate::csv::Sheet { format, baseline, text: text.to_string() });
+                    }
+                    None => self.render_content(text, false),
+                }
+            }
+            _ => self.render_content(text, markdown),
+        }
         self.reset_history();
+    }
+
+    /// Rich formatting applies: Markdown, not a CSV table.
+    pub fn formatting(&self) -> bool {
+        self.markdown.get() && self.csv.borrow().is_none()
+    }
+
+    /// After the path changed: a table saved as CSV becomes a CSV sheet, a
+    /// sheet saved under another name becomes Markdown again.
+    pub fn retarget(&self, path: &std::path::Path) {
+        if !self.markdown.get() {
+            return;
+        }
+        let kind = crate::csv::kind(path);
+        let mut csv = self.csv.borrow_mut();
+        let Some(delim) = kind else {
+            *csv = None;
+            return;
+        };
+        match csv.as_mut() {
+            // Same delimiter: an untouched sheet still writes its original text.
+            Some(s) if delim.is_none_or(|d| d == s.format.delim) => {}
+            Some(s) => {
+                s.format.delim = delim.unwrap_or(',');
+                s.baseline.clear();
+                s.text.clear();
+            }
+            None => {
+                let format = crate::csv::Format { delim: delim.unwrap_or(','), crlf: false, final_newline: true };
+                *csv = Some(crate::csv::Sheet { format, baseline: Vec::new(), text: String::new() });
+            }
+        }
     }
 
     /// Replaces the buffer without touching the undo history.
@@ -2114,7 +2173,7 @@ impl Tab {
 
     /// Records `text` as the file's content on disk.
     pub fn set_disk(&self, text: String) {
-        let norm = if self.markdown.get() { model::serialize(&model::parse(&text)) } else { text.clone() };
+        let norm = if self.markdown.get() && self.csv.borrow().is_none() { model::serialize(&model::parse(&text)) } else { text.clone() };
         *self.saved.borrow_mut() = Some(norm);
         *self.disk.borrow_mut() = Some(text);
     }

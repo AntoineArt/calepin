@@ -1,3 +1,4 @@
+mod csv;
 mod editor;
 mod find;
 mod i18n;

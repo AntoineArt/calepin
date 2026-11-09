@@ -159,6 +159,11 @@ fn leave_special_workspace() {
 }
 type Command = Rc<dyn Fn(&Rc<Window>)>;
 
+/// Files that open rendered: Markdown, and CSV as a table.
+fn is_rich_path(p: &Path) -> bool {
+    is_markdown_path(p) || crate::csv::is_csv_path(p)
+}
+
 fn is_markdown_path(p: &Path) -> bool {
     matches!(
         p.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref(),
@@ -1008,9 +1013,13 @@ impl Window {
             None => self.make_tab(session::new_id()),
         };
         *tab.path.borrow_mut() = Some(path.clone());
-        tab.set_content(&text, is_markdown_path(&path) && !readonly);
+        tab.set_content(&text, is_rich_path(&path) && !readonly);
         tab.set_readonly(readonly);
         tab.set_disk(text);
+        // Data tables are often wider than a text column.
+        if tab.csv.borrow().is_some() {
+            tab.set_wide_tables(&[0]);
+        }
         self.watch_file(&tab);
         if reuse.is_some() {
             self.rebuild_tabbar();
@@ -1061,6 +1070,13 @@ impl Window {
             self.error(tr("This file is not UTF-8 text: it is open read-only."));
             return false;
         }
+        // Saving under another kind of name (note.md as data.csv) changes
+        // what the tab writes.
+        let renamed = tab.path.borrow().as_deref() != Some(path.as_path());
+        let sheet = tab.csv.borrow().clone();
+        if renamed {
+            tab.retarget(&path);
+        }
         let content = tab.content();
         match std::fs::write(&path, content.as_bytes()) {
             Ok(()) => {
@@ -1074,10 +1090,12 @@ impl Window {
                     self.rebuild_tabbar();
                 }
                 self.refresh_headers();
+                self.update_toolbar(tab);
                 self.save_session();
                 true
             }
             Err(e) => {
+                *tab.csv.borrow_mut() = sheet;
                 self.error(&trf("Cannot save: {}", &[&e]));
                 false
             }
@@ -1342,8 +1360,13 @@ impl Window {
         *self.rich_buttons.borrow_mut() = rich;
     }
 
+    /// The active tab, when it takes Markdown formatting.
+    fn formattable_tab(&self) -> Option<TabRef> {
+        self.active_tab().filter(|t| t.formatting())
+    }
+
     fn block(&self, cmd: BlockCmd) {
-        if let Some(t) = self.active_tab() {
+        if let Some(t) = self.formattable_tab() {
             t.set_block(cmd);
             t.view.grab_focus();
         }
@@ -1358,13 +1381,13 @@ impl Window {
     }
 
     fn table(&self) {
-        if let Some(t) = self.active_tab() {
+        if let Some(t) = self.formattable_tab() {
             t.insert_table();
         }
     }
 
     fn inline(&self, name: &str) {
-        if let Some(t) = self.active_tab() {
+        if let Some(t) = self.formattable_tab() {
             t.toggle_inline(name);
             // Stay in a table cell when the command came from there.
             let in_cell = gtk::prelude::GtkWindowExt::focus(&self.win).is_some_and(|f| f.has_css_class("mw-cell"));
@@ -1375,7 +1398,7 @@ impl Window {
     }
 
     fn clear(&self) {
-        if let Some(t) = self.active_tab() {
+        if let Some(t) = self.formattable_tab() {
             t.clear_format();
             t.view.grab_focus();
         }
@@ -1414,31 +1437,40 @@ impl Window {
         self.update_bar.set_reveal_child(true);
     }
 
-    /// Formatting needs the rich view; the source switch exists only for
-    /// Markdown (unsaved notes and .md files), and names what it switches to.
+    /// Formatting needs the rich view (and makes no sense in a CSV table);
+    /// the source switch exists only for Markdown (unsaved notes and .md
+    /// files) and CSV, and names what it switches to.
     fn update_toolbar(&self, tab: &Tab) {
         let rich = tab.markdown.get();
+        let formatting = tab.formatting();
         for b in self.rich_buttons.borrow().iter() {
-            b.set_sensitive(rich);
+            b.set_sensitive(formatting);
         }
         if let Some(b) = self.source_button.borrow().as_ref() {
-            let md = tab.path.borrow().as_ref().is_none_or(|p| is_markdown_path(p)) && !tab.readonly.get();
-            b.set_visible(md);
+            let csv = tab.path.borrow().as_deref().is_some_and(crate::csv::is_csv_path);
+            let switchable = tab.path.borrow().as_ref().is_none_or(|p| is_rich_path(p)) && !tab.readonly.get();
+            b.set_visible(switchable);
             if let Some(l) = b.child().and_downcast::<gtk::Label>() {
-                l.set_text(if rich { "MD" } else { tr("Rich") });
+                l.set_text(match (rich, csv) {
+                    (true, true) => "CSV",
+                    (true, false) => "MD",
+                    (false, true) => tr("Table"),
+                    (false, false) => tr("Rich"),
+                });
             }
-            b.set_tooltip_text(Some(tr(if rich {
-                "Show the raw Markdown (Ctrl+Shift+E)"
-            } else {
-                "Back to the rendered view (Ctrl+Shift+E)"
+            b.set_tooltip_text(Some(tr(match (rich, csv) {
+                (true, true) => "Show the raw CSV (Ctrl+Shift+E)",
+                (true, false) => "Show the raw Markdown (Ctrl+Shift+E)",
+                (false, true) => "Back to the table (Ctrl+Shift+E)",
+                (false, false) => "Back to the rendered view (Ctrl+Shift+E)",
             })));
         }
     }
 
     fn toggle_source(&self) {
         if let Some(t) = self.active_tab() {
-            if t.path.borrow().as_ref().is_some_and(|p| !is_markdown_path(p)) && !t.markdown.get() {
-                return; // Not a Markdown file: stay in plain mode.
+            if t.path.borrow().as_ref().is_some_and(|p| !is_rich_path(p)) && !t.markdown.get() {
+                return; // Neither Markdown nor CSV: stay in plain mode.
             }
             t.toggle_source();
             self.update_toolbar(&t);
@@ -1447,10 +1479,7 @@ impl Window {
     }
 
     fn link_popover(self: &Rc<Self>) {
-        let Some(tab) = self.active_tab() else { return };
-        if !tab.markdown.get() {
-            return;
-        }
+        let Some(tab) = self.formattable_tab() else { return };
         let entry = gtk::Entry::new();
         entry.set_placeholder_text(Some(tr("https://… (empty to remove)")));
         entry.set_width_chars(36);
