@@ -27,6 +27,11 @@
   <url type="bugtracker">https://github.com/AntoineArt/calepin/issues</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.3.3" date="2026-11-09">
+      <description>
+        <p>CSV and TSV files open as an editable table and are saved back as CSV, keeping their separator and line endings.</p>
+      </description>
+    </release>
     <release version="0.3.2" date="2026-11-09">
       <description>
         <p>Checks for updates every 6 hours while running, and retries when the network is not up yet. The version is shown under the minimap.</p>
