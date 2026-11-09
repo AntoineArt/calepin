@@ -27,6 +27,11 @@
   <url type="bugtracker">https://github.com/AntoineArt/calepin/issues</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.3.1" date="2026-11-09">
+      <description>
+        <p>Ctrl+A in a table cell selects the cell, then the table, then the document. Tables inside a selection are drawn as selected. Fixed a crash when a table was removed with the pointer over it, and a blank line left behind by deleting a selected table.</p>
+      </description>
+    </release>
     <release version="0.3.0" date="2026-11-05">
       <description>
         <p>New icon. English interface, in French when the locale is French. Markdown typed inside table cells now renders.</p>

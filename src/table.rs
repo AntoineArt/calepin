@@ -34,6 +34,8 @@ pub struct TableView {
     /// Leave the table: true = after it, false = before it.
     pub on_exit: RefCell<Option<ExitCallback>>,
     pub on_delete: RefCell<Option<Callback>>,
+    /// Ctrl+A in a cell whose text is already all selected: select the table.
+    pub on_select_all: RefCell<Option<Callback>>,
     /// Width mode toggled.
     pub on_resize: RefCell<Option<Callback>>,
     colors: Cell<CellColors>,
@@ -260,6 +262,7 @@ impl TableView {
             on_change: RefCell::new(None),
             on_exit: RefCell::new(None),
             on_delete: RefCell::new(None),
+            on_select_all: RefCell::new(None),
             on_resize: RefCell::new(None),
             colors: Cell::new(CellColors { code_fg: gdk::RGBA::RED, code_bg: gdk::RGBA::WHITE, link: gdk::RGBA::BLUE }),
         });
@@ -659,6 +662,27 @@ impl TableView {
         }
     }
 
+    /// Drawn as selected: the table is inside the text view's selection.
+    pub fn set_selected(&self, on: bool) {
+        if self.root.has_css_class("selected") != on {
+            if on {
+                self.root.add_css_class("selected");
+            } else {
+                self.root.remove_css_class("selected");
+            }
+        }
+    }
+
+    /// Unselects the text of every cell.
+    pub fn clear_selection(&self) {
+        for cell in self.cells.borrow().iter().flatten() {
+            let b = cell.buffer();
+            if b.has_selection() {
+                b.place_cursor(&b.iter_at_mark(&b.get_insert()));
+            }
+        }
+    }
+
     fn exit(&self, after: bool) {
         let cb = self.on_exit.borrow().clone();
         if let Some(cb) = cb {
@@ -733,6 +757,24 @@ impl TableView {
             }
             gdk::Key::Escape => {
                 self.exit(true);
+                true
+            }
+            // Ctrl+A: the cell, then the table (then the text view's own
+            // Ctrl+A selects the whole document).
+            gdk::Key::a | gdk::Key::A if ctrl && !shift => {
+                let b = view.buffer();
+                let all = match b.selection_bounds() {
+                    Some((s, e)) => s.is_start() && e.is_end(),
+                    None => b.char_count() == 0,
+                };
+                if !all {
+                    b.select_range(&b.start_iter(), &b.end_iter());
+                    return true;
+                }
+                let cb = self.on_select_all.borrow().clone();
+                if let Some(cb) = cb {
+                    cb();
+                }
                 true
             }
             _ => false,

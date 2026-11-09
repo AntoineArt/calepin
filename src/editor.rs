@@ -466,6 +466,14 @@ impl Tab {
         });
         let weak = Rc::downgrade(self);
         self.buffer.connect_mark_set(move |b, _, mark| {
+            if let Some(t) = weak.upgrade()
+                && (*mark == b.get_insert() || *mark == b.selection_bound())
+            {
+                t.update_table_selection();
+            }
+        });
+        let weak = Rc::downgrade(self);
+        self.buffer.connect_mark_set(move |b, _, mark| {
             let Some(t) = weak.upgrade() else { return };
             if *mark != b.get_insert() || t.caret_check.replace(true) {
                 return;
@@ -492,6 +500,7 @@ impl Tab {
         self.buffer.connect_changed(move |_| {
             if let Some(t) = weak.upgrade() {
                 t.schedule_table_sync();
+                t.update_table_selection();
             }
         });
         let weak = Rc::downgrade(self);
@@ -1327,7 +1336,7 @@ impl Tab {
 
     fn handle_backspace(&self) -> bool {
         if self.buffer.has_selection() {
-            return false;
+            return self.delete_selected_table();
         }
         let cur = self.cursor();
         let line = cur.line();
@@ -1971,7 +1980,8 @@ impl Tab {
 
     fn copy_markdown(&self, cut: bool) {
         let Some((s, e)) = self.buffer.selection_bounds() else { return };
-        let single = s.line() == e.line();
+        // A selected table is a block of its own, not inline text.
+        let single = s.line() == e.line() && self.line_anchor(s.line()).is_none();
         let text = if single {
             model::serialize_line(&Line { block: Block::Para, spans: self.spans(s.offset(), e.offset()) })
         } else {
@@ -2529,12 +2539,37 @@ impl Tab {
             }
         }));
         let a = anchor.clone();
+        *tv.on_select_all.borrow_mut() = Some(Rc::new({
+            let me = me.clone();
+            move || {
+                if let Some(t) = me.upgrade() {
+                    t.select_table(&a);
+                }
+            }
+        }));
+        // Editing a cell drops the text view's selection, as a click would.
+        let focus = gtk::EventControllerFocus::new();
+        focus.connect_enter({
+            let me = me.clone();
+            move |_| {
+                if let Some(t) = me.upgrade()
+                    && t.buffer.has_selection()
+                {
+                    t.buffer.place_cursor(&t.buffer.iter_at_mark(&t.buffer.get_insert()));
+                }
+            }
+        });
+        tv.root.add_controller(focus);
+        let a = anchor.clone();
         *tv.on_delete.borrow_mut() = Some(Rc::new(move || {
             if let Some(t) = me.upgrade() {
                 t.delete_table(&a);
             }
         }));
         let placeholder = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        // Never under the pointer: unmapping a hovered child while its anchor
+        // is being deleted makes GTK read the half-updated buffer (segfault).
+        placeholder.set_can_target(false);
         self.view.add_child_at_anchor(&placeholder, &anchor);
         let (normal, wide) = self.table_space();
         tv.set_available(normal, wide);
@@ -2582,10 +2617,56 @@ impl Tab {
         self.scroll_to_cursor();
     }
 
+    /// Selects the whole table in the text view (its anchor character), so
+    /// that copy, cut and delete act on it and Ctrl+A goes on to the document.
+    fn select_table(&self, anchor: &gtk::TextChildAnchor) {
+        if anchor.is_deleted() {
+            return;
+        }
+        if let Some(slot) = self.tables.borrow().iter().find(|s| s.anchor == *anchor) {
+            slot.view.clear_selection();
+        }
+        let off = self.buffer.iter_at_child_anchor(anchor).offset();
+        self.view.grab_focus();
+        self.buffer.select_range(&self.buffer.iter_at_offset(off + 1), &self.buffer.iter_at_offset(off));
+        self.update_table_selection();
+    }
+
+    /// Draws as selected the tables inside the text view's selection.
+    fn update_table_selection(&self) {
+        let sel = self.buffer.selection_bounds().map(|(s, e)| (s.offset(), e.offset()));
+        for slot in self.tables.borrow().iter() {
+            let on = !slot.anchor.is_deleted()
+                && sel.is_some_and(|(s, e)| {
+                    let off = self.buffer.iter_at_child_anchor(&slot.anchor).offset();
+                    s <= off && off < e
+                });
+            slot.view.set_selected(on);
+        }
+    }
+
+    /// Backspace or Delete on a selection that is exactly one table: delete
+    /// it with its line, as the table's own button does.
+    fn delete_selected_table(&self) -> bool {
+        let Some((s, e)) = self.buffer.selection_bounds() else { return false };
+        if e.offset() != s.offset() + 1 {
+            return false;
+        }
+        let Some(anchor) = s.child_anchor() else { return false };
+        self.delete_table(&anchor);
+        true
+    }
+
     fn delete_table(&self, anchor: &gtk::TextChildAnchor) {
         let off = self.buffer.iter_at_child_anchor(anchor).offset();
         let it = self.buffer.iter_at_offset(off + 1);
-        let end = if it.ends_line() && !it.is_end() { off + 2 } else { off + 1 };
+        let mut end = if it.ends_line() && !it.is_end() { off + 2 } else { off + 1 };
+        // Between two blank lines, keep only one.
+        let before_blank = off > 0 && self.buffer.iter_at_offset(off - 1).starts_line();
+        let after = self.buffer.iter_at_offset(end);
+        if end == off + 2 && before_blank && after.ends_line() && !after.is_end() {
+            end += 1;
+        }
         self.begin();
         self.delete_range(off, end);
         self.end();
@@ -2676,7 +2757,7 @@ impl Tab {
 
     fn handle_delete(&self) -> bool {
         if self.buffer.has_selection() {
-            return false;
+            return self.delete_selected_table();
         }
         let cur = self.cursor();
         if cur.child_anchor().is_some() {

@@ -310,6 +310,8 @@ window.calepin textview.mw-cell.last-row {{ border-bottom: none; }}
 window.calepin textview.mw-cell.header, window.calepin textview.mw-cell.header text {{ background: {dbg}; font-weight: bold; }}
 window.calepin textview.mw-cell:focus-within, window.calepin textview.mw-cell:focus-within text {{ background: alpha({accent}, 0.10); }}
 window.calepin textview.mw-cell text selection {{ background: alpha({accent}, 0.40); color: {fg}; }}
+window.calepin .mw-table.selected .mw-grid {{ border-color: {sel}; }}
+window.calepin .mw-table.selected textview.mw-cell, window.calepin .mw-table.selected textview.mw-cell text {{ background: {sel}; }}
 window.calepin .mw-table-controls button {{
   min-height: 20px; padding: 0 6px; background: transparent; box-shadow: none; border: none;
   color: {muted}; font-size: 9pt; border-radius: 4px;
