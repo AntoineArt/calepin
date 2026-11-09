@@ -129,18 +129,34 @@ fn main() -> glib::ExitCode {
     app.run()
 }
 
-/// Once per process, a few seconds after start-up, off the main thread.
+/// A few seconds after start-up, then every few hours: the process stays
+/// resident (closing the window only hides it), so a check at start alone
+/// would miss every release made while it runs. Off the main thread.
 fn schedule_update_check(win: &Rc<window::Window>) {
     thread_local!(static DONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
     if update::disabled() || DONE.with(|d| d.replace(true)) {
         return;
     }
-    let weak = Rc::downgrade(win);
-    glib::timeout_add_local_once(std::time::Duration::from_secs(4), move || {
+    check_update_in(Rc::downgrade(win), 4);
+}
+
+fn check_update_in(weak: std::rc::Weak<window::Window>, secs: u64) {
+    const EVERY: u64 = 6 * 3600;
+    // Network not up yet (session start) or offline: try again soon.
+    const RETRY: u64 = 10 * 60;
+    glib::timeout_add_local_once(std::time::Duration::from_secs(secs), move || {
         glib::spawn_future_local(async move {
             let Ok(outcome) = gio::spawn_blocking(update::check_and_update).await else { return };
-            if let Some(w) = weak.upgrade() {
-                w.show_update(outcome);
+            let Some(w) = weak.upgrade() else { return };
+            let next = match outcome {
+                // The new binary is in place: nothing more until a restart.
+                update::Outcome::Installed(_) => None,
+                update::Outcome::Unreachable => Some(RETRY),
+                _ => Some(EVERY),
+            };
+            w.show_update(outcome);
+            if let Some(next) = next {
+                check_update_in(Rc::downgrade(&w), next);
             }
         });
     });

@@ -1,4 +1,5 @@
-//! Once per start: is there a newer release on GitHub? When Calepin runs from
+//! Is there a newer release on GitHub? (Checked at start-up, then every few
+//! hours: Calepin stays resident.) When Calepin runs from
 //! a binary the user can replace (install.sh puts it in ~/.local/bin), the new
 //! release is downloaded, checked against its SHA-256 and swapped in.
 
@@ -20,6 +21,8 @@ pub struct Release {
 #[derive(Clone, Debug)]
 pub enum Outcome {
     UpToDate,
+    /// GitHub could not be reached (offline, network not up yet at login).
+    Unreachable,
     /// Newer, but this copy cannot replace itself (Flatpak, system package…).
     Available(Release),
     /// Newer and installed: a restart runs it.
@@ -125,7 +128,7 @@ pub fn check_and_update() -> Outcome {
         Ok(r) => r,
         Err(e) => {
             eprintln!("calepin: update check failed: {e}");
-            return Outcome::UpToDate;
+            return Outcome::Unreachable;
         }
     };
     let current = parse_version(env!("CARGO_PKG_VERSION"));

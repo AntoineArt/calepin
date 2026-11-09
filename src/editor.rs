@@ -190,9 +190,22 @@ impl Tab {
         let overlay = gtk::Overlay::new();
         overlay.set_child(Some(&scrolled));
         overlay.set_hexpand(true);
+        // The version, discreetly, under the minimap (it stays in the corner
+        // when the minimap is hidden).
+        let version = gtk::Label::new(Some(concat!("v", env!("CARGO_PKG_VERSION"))));
+        version.add_css_class("version");
+        version.set_halign(gtk::Align::End);
+        version.set_valign(gtk::Align::End);
+        // Without the minimap, the label takes the column's height to stay
+        // at the bottom.
+        let v = version.clone();
+        map.connect_visible_notify(move |m| v.set_vexpand(!m.is_visible()));
+        let side = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        side.append(&map);
+        side.append(&version);
         let widget = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         widget.append(&overlay);
-        widget.append(&map);
+        widget.append(&side);
 
 
         let tab = Rc::new(Tab {

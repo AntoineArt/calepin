@@ -288,6 +288,7 @@ window.calepin .toolbar button:active {{ background: {ddbg}; }}
 window.calepin .toolbar button:disabled {{ color: {muted}; opacity: 0.5; }}
 window.calepin .toolbar .sep {{ background: {dbg}; min-width: 1px; margin: 4px 6px; }}
 window.calepin .toolbar .count {{ color: {muted}; font-size: 9pt; margin-left: 8px; }}
+window.calepin label.version {{ color: {muted}; opacity: 0.55; font-size: 8pt; margin: 2px 8px 4px 8px; }}
 window.calepin .updatebar {{ background: alpha({accent}, 0.14); padding: 6px 12px; border-bottom: 1px solid {dbg}; }}
 window.calepin .updatebar button {{ background: transparent; box-shadow: none; border: 1px solid alpha({accent}, 0.5); color: {fg}; border-radius: 6px; padding: 2px 10px; }}
 window.calepin .findbar {{ background: {dbg}; padding: 4px 10px; border-top: 1px solid {ddbg}; }}

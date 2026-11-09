@@ -1385,7 +1385,7 @@ impl Window {
     pub fn show_update(self: &Rc<Self>, outcome: crate::update::Outcome) {
         use crate::update::Outcome;
         let (text, button, action, page): (String, &str, u8, String) = match outcome {
-            Outcome::UpToDate => return,
+            Outcome::UpToDate | Outcome::Unreachable => return,
             Outcome::Installed(r) => (trf("Calepin {} is installed. Restart to use it (your tabs are kept).", &[&r.version]), tr("Restart"), 1, r.page),
             Outcome::Available(r) => (trf("Calepin {} is available.", &[&r.version]), tr("View release"), 2, r.page),
             Outcome::Failed(r, e) => (trf("Calepin {} is available, but the update failed: {}", &[&r.version, &e]), tr("View release"), 2, r.page),
