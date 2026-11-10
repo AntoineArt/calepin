@@ -27,6 +27,12 @@
   <url type="bugtracker">https://github.com/AntoineArt/calepin/issues</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.4.1" date="2026-11-10">
+      <description>
+        <p>Table cells can be selected together (drag, Shift+click, Shift+arrows), copied as tab-separated text, cleared, and filled by pasting. Columns resize by dragging their border; tables too wide for the window scroll sideways (Shift+wheel, swipe or scrollbar) and CSV columns keep their width.</p>
+        <p>Middle click scrolls fast (or pastes, from the right-click menu). The text cursor no longer turns into a hand over text, and a wide table can no longer make the window wider than the screen.</p>
+      </description>
+    </release>
     <release version="0.4.0" date="2026-11-10">
       <description>
         <p>Folding: Markdown sections, JSON objects and arrays, YAML blocks. Arrows in the margin, a "⋯" on folded lines, keyboard shortcuts; folds are kept across undo and restarts, and folded text is still saved, copied and searched.</p>

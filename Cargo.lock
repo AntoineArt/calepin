@@ -39,7 +39,7 @@ dependencies = [
 
 [[package]]
 name = "calepin"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "glib-unix",
  "gtk4",
