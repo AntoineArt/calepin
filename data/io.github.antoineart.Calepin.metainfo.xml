@@ -27,6 +27,12 @@
   <url type="bugtracker">https://github.com/AntoineArt/calepin/issues</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.4.0" date="2026-11-10">
+      <description>
+        <p>Folding: Markdown sections, JSON objects and arrays, YAML blocks. Arrows in the margin, a "⋯" on folded lines, keyboard shortcuts; folds are kept across undo and restarts, and folded text is still saved, copied and searched.</p>
+        <p>Dragging in the minimap keeps the visible band under the pointer, however long the document.</p>
+      </description>
+    </release>
     <release version="0.3.4" date="2026-11-10">
       <description>
         <p>Undo history survives a restart. Ctrl+Z works from table cells (a new table is undone in one step), undoes a word at a time, puts the caret back at the change and reaches across the source view switch.</p>
