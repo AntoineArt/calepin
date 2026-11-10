@@ -27,6 +27,11 @@
   <url type="bugtracker">https://github.com/AntoineArt/calepin/issues</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.4.2" date="2026-11-10">
+      <description>
+        <p>Dragging across table cells no longer risks leaving the pointer held by a cell. Middle-click scrolling stops on any click, on a tab change or when the window loses focus, and over a wide table it also scrolls sideways.</p>
+      </description>
+    </release>
     <release version="0.4.1" date="2026-11-10">
       <description>
         <p>Table cells can be selected together (drag, Shift+click, Shift+arrows), copied as tab-separated text, cleared, and filled by pasting. Columns resize by dragging their border; tables too wide for the window scroll sideways (Shift+wheel, swipe or scrollbar) and CSV columns keep their width.</p>
