@@ -27,6 +27,12 @@
   <url type="bugtracker">https://github.com/AntoineArt/calepin/issues</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.3.4" date="2026-11-10">
+      <description>
+        <p>Undo history survives a restart. Ctrl+Z works from table cells (a new table is undone in one step), undoes a word at a time, puts the caret back at the change and reaches across the source view switch.</p>
+        <p>Long list items wrap under their text; the caret no longer lands before a bullet; tables no longer squeeze after the source view switch; quotes and secondary text stay readable in every theme.</p>
+      </description>
+    </release>
     <release version="0.3.3" date="2026-11-09">
       <description>
         <p>CSV and TSV files open as an editable table and are saved back as CSV, keeping their separator and line endings.</p>
