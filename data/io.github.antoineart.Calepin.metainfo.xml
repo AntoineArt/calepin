@@ -27,6 +27,11 @@
   <url type="bugtracker">https://github.com/AntoineArt/calepin/issues</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.4.3" date="2026-11-10">
+      <description>
+        <p>Middle-click scrolling works while the button is held (releasing stops it), as well as after a click.</p>
+      </description>
+    </release>
     <release version="0.4.2" date="2026-11-10">
       <description>
         <p>Dragging across table cells no longer risks leaving the pointer held by a cell. Middle-click scrolling stops on any click, on a tab change or when the window loses focus, and over a wide table it also scrolls sideways.</p>
