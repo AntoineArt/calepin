@@ -26,6 +26,27 @@ pub struct Sheet {
     pub baseline: Vec<Vec<String>>,
     /// Text the table was built from, re-emitted while nothing changed.
     pub text: String,
+    /// The file's rows and text when it differs from `text` (after an edit
+    /// of the raw CSV): back to those rows, the file's own text again.
+    pub disk: Option<(Vec<Vec<String>>, String)>,
+}
+
+impl Sheet {
+    /// The CSV for `rows`: an original text when the rows are unchanged.
+    pub fn text_for(&self, rows: &[Vec<String>]) -> String {
+        if rows == self.baseline.as_slice() {
+            return self.text.clone();
+        }
+        match &self.disk {
+            Some((r, t)) if rows == r.as_slice() => t.clone(),
+            _ => write(rows, self.format),
+        }
+    }
+}
+
+/// The rows a table shows for `text`, as `rows_of` reads them back.
+pub fn shown_rows(text: &str, delim: char) -> Option<Vec<Vec<String>>> {
+    to_markdown(text, delim).map(|md| rows_of(&model::parse(&md)))
 }
 
 /// Whether `p` is a delimited file; `Some(None)` when the delimiter must be
@@ -245,6 +266,22 @@ mod tests {
     #[test]
     fn multiline_fields_stay_plain() {
         assert_eq!(to_markdown("a,b\n\"x\ny\",z\n", ','), None);
+    }
+
+    #[test]
+    fn back_to_the_file_rows_gives_the_file_text() {
+        let file = "a;\"b\"\r\n1;2\r\n";
+        let edited = "a;b\n1;2\n3;4";
+        let sheet = Sheet {
+            format: format_of(file, ';'),
+            baseline: shown_rows(edited, ';').unwrap(),
+            text: edited.into(),
+            disk: Some((shown_rows(file, ';').unwrap(), file.into())),
+        };
+        assert_eq!(sheet.text_for(&shown_rows(edited, ';').unwrap()), edited);
+        assert_eq!(sheet.text_for(&shown_rows(file, ';').unwrap()), file);
+        // Other rows: written with the file's conventions.
+        assert_eq!(sheet.text_for(&[vec!["x".into()]]), "x\r\n");
     }
 
     #[test]

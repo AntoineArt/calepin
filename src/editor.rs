@@ -12,6 +12,8 @@ use crate::model::{self, Block, Line, Span, Style, Table};
 use crate::table::{CellColors, TableView};
 use crate::theme::Theme;
 
+/// Longest list prefix (indent, marker, space) given a hanging indent.
+const MAX_HANG: i32 = 24;
 const INLINE: [&str; 4] = ["b", "i", "s", "code"];
 const BLOCKS: [&str; 9] = ["h1", "h2", "h3", "h4", "h5", "h6", "quote", "codeblock", "fence"];
 const MARKERS: [char; 3] = ['-', '*', '+'];
@@ -92,6 +94,15 @@ pub struct Tab {
     sync_passes: Cell<u32>,
     caret_line: Cell<i32>,
     caret_check: Cell<bool>,
+    /// Caret offset at the last check, to tell which way it moved.
+    caret_offset: Cell<i32>,
+    /// Lines whose hanging indent needs a check.
+    hang_dirty: Cell<Option<(i32, i32)>>,
+    rendering: Cell<bool>,
+    /// The Markdown history while the source is shown, back with the rich view.
+    rich_history: RefCell<Option<(Vec<(String, i32)>, usize)>>,
+    /// The history changed since it was last saved.
+    pub hist_dirty: Cell<bool>,
     map_colors: RefCell<[gdk::RGBA; 5]>,
     /// Search hits as y positions in the text, for the minimap.
     hit_marks: RefCell<Vec<(f64, bool)>>,
@@ -236,6 +247,11 @@ impl Tab {
             sync_passes: Cell::new(0),
             caret_line: Cell::new(0),
             caret_check: Cell::new(false),
+            caret_offset: Cell::new(0),
+            hang_dirty: Cell::new(None),
+            rendering: Cell::new(false),
+            rich_history: RefCell::new(None),
+            hist_dirty: Cell::new(false),
             map_colors: RefCell::new([gdk::RGBA::BLACK; 5]),
             hit_marks: RefCell::new(Vec::new()),
             find_colors: RefCell::new([gdk::RGBA::BLACK; 3]),
@@ -342,7 +358,7 @@ impl Tab {
         };
         let bright = theme.rgba("bright_foreground");
         let accent = theme.rgba("accent");
-        let muted = theme.rgba("muted");
+        let muted = theme.legible_rgba("muted", 3.0);
         for (name, scale, above, weight) in [
             ("h1", 1.6, 18, 800),
             ("h2", 1.35, 14, 700),
@@ -368,7 +384,8 @@ impl Tab {
         });
         set("quote", &|t| {
             t.set_style(pango::Style::Italic);
-            t.set_foreground_rgba(Some(&theme.rgba("dark_foreground")));
+            // Quoted text is content: as readable as body text.
+            t.set_foreground_rgba(Some(&theme.legible_rgba("dark_foreground", 4.5)));
             t.set_paragraph_background_rgba(Some(&opaque(theme.mix("accent", 0.07))));
         });
         set("codeblock", &|t| {
@@ -377,8 +394,11 @@ impl Tab {
             t.set_pixels_inside_wrap(0);
         });
         set("fence", &|t| {
-            t.set_foreground_rgba(Some(&theme.rgba("dark_foreground")));
+            t.set_foreground_rgba(Some(&theme.legible_rgba("dark_foreground", 3.0)));
             t.set_scale(0.85);
+            // Backticks sit high: keep them off the block's edge.
+            t.set_pixels_above_lines(5);
+            t.set_pixels_below_lines(3);
         });
         set("lm", &|t| {
             t.set_foreground_rgba(Some(&accent));
@@ -421,6 +441,13 @@ impl Tab {
         let m = self.margin.get();
         self.margin.set(-1);
         self.set_margin(m.max(0));
+        // A new theme font applies at the next style update.
+        let me = self.me.borrow().clone();
+        glib::timeout_add_local_once(std::time::Duration::from_millis(50), move || {
+            if let Some(t) = me.upgrade() {
+                t.refresh_hang();
+            }
+        });
     }
 
     /// Horizontal text margin; the Markdown column is centred.
@@ -450,10 +477,31 @@ impl Tab {
     fn connect_signals(self: &Rc<Self>) {
         let weak = Rc::downgrade(self);
         self.buffer.connect_insert_text(move |_, iter, text| {
+            if let Some(t) = weak.upgrade() {
+                let l = iter.line();
+                t.mark_hang(l, l + text.matches('\n').count() as i32);
+            }
+        });
+        let weak = Rc::downgrade(self);
+        self.buffer.connect_delete_range(move |_, s, _| {
+            if let Some(t) = weak.upgrade() {
+                t.mark_hang(s.line(), s.line());
+            }
+        });
+        let weak = Rc::downgrade(self);
+        self.buffer.connect_insert_text(move |_, iter, text| {
             if let Some(t) = weak.upgrade()
                 && t.busy.get() == 0
                 && !t.suppress.get()
             {
+                // A step at the end of each word, before its space: undo
+                // then removes " word" whole, leaving no trailing space.
+                if text == " " && t.markdown.get() && !t.restoring.get() {
+                    let mut prev = *iter;
+                    if prev.backward_char() && prev.char().is_alphanumeric() {
+                        t.checkpoint();
+                    }
+                }
                 t.pending.set(Some((iter.offset(), text.chars().count() as i32)));
             }
         });
@@ -499,6 +547,7 @@ impl Tab {
                 if let Some(t) = w.upgrade() {
                     t.caret_check.set(false);
                     t.keep_caret_off_tables();
+                    t.keep_caret_off_markers();
                 }
             });
         });
@@ -745,16 +794,22 @@ impl Tab {
             if len == 1 {
                 let c = self.buffer.iter_at_offset(off).char();
                 if matches!(c, '*' | '_' | '~' | '`' | ')' | ' ') {
-                    // A step per word, and one before any auto-formatting,
-                    // so that undo brings the typed Markdown back.
+                    // Undo brings the typed Markdown back ("- ", "**b**")
+                    // before the formatting it turned into: a step only
+                    // when a rule applies, not at each marker typed.
                     self.busy.set(self.busy.get() - 1);
-                    self.checkpoint();
+                    let before = (self.to_markdown(), self.cursor_offset());
                     self.busy.set(self.busy.get() + 1);
-                }
-                if c == ' ' && self.block_rules(off) {
-                    // Offsets moved; inline rules do not apply to a new block.
-                } else if matches!(c, '*' | '_' | '~' | '`' | ')' | ' ') {
-                    self.inline_rules(off, c);
+                    let len = self.buffer.char_count();
+                    let block = c == ' ' && self.block_rules(off);
+                    if !block {
+                        // Offsets moved after a block rule; inline rules
+                        // do not apply to a new block.
+                        self.inline_rules(off, c);
+                    }
+                    if block || self.buffer.char_count() != len {
+                        self.push_step(before.0, before.1);
+                    }
                 }
             }
         } else if let Some(off) = deleted {
@@ -872,6 +927,96 @@ impl Tab {
             match info.kind {
                 Kind::Check { done: true, .. } => self.buffer.apply_tag_by_name("done", &content, &end),
                 _ => self.buffer.remove_tag_by_name("done", &start, &full_end),
+            }
+        }
+    }
+
+    /// Lines whose hanging indent may be stale, fixed at the next idle.
+    fn mark_hang(&self, first: i32, last: i32) {
+        if self.rendering.get() {
+            return;
+        }
+        let range = match self.hang_dirty.get() {
+            Some((a, b)) => (a.min(first), b.max(last)),
+            None => (first, last),
+        };
+        if self.hang_dirty.replace(Some(range)).is_some() {
+            return;
+        }
+        let me = self.me.borrow().clone();
+        glib::idle_add_local_once(move || {
+            if let Some(t) = me.upgrade()
+                && let Some((a, b)) = t.hang_dirty.take()
+            {
+                t.fix_hang(a, b);
+            }
+        });
+    }
+
+    /// Gives lines `first..=last` the hanging indent their prefix calls for,
+    /// and the rest of the list too (renumbering 9 to 10 widens the prefix).
+    fn fix_hang(&self, first: i32, last: i32) {
+        if !self.markdown.get() {
+            return;
+        }
+        let n = self.buffer.line_count();
+        let mut line = (first - 1).max(0);
+        let mut last = last.min(n - 1);
+        while line <= last {
+            let info = self.line_info(line);
+            let want = (info.is_list() && (1..=MAX_HANG).contains(&info.prefix)).then_some(info.prefix);
+            let (start, mut end) = self.line_bounds(line);
+            end.forward_char();
+            let have = start.tags().iter().find_map(|t| t.name().and_then(|n| n.strip_prefix("hang:").and_then(|k| k.parse::<i32>().ok())));
+            if have != want {
+                if let Some(k) = have {
+                    self.buffer.remove_tag_by_name(&format!("hang:{k}"), &start, &end);
+                }
+                self.apply_hang(&info, &start, &end);
+            }
+            if line == last && info.is_list() && last + 1 < n && last < first + 2000 {
+                last += 1;
+            }
+            line += 1;
+        }
+    }
+
+    /// Wrapped lines of a list item line up with its text, not its bullet.
+    fn apply_hang(&self, info: &LineInfo, start: &gtk::TextIter, end: &gtk::TextIter) {
+        if info.is_list() && (1..=MAX_HANG).contains(&info.prefix) {
+            let tag = self.hang_tag(info.prefix);
+            self.buffer.apply_tag(&tag, start, end);
+        }
+    }
+
+    fn hang_tag(&self, n: i32) -> gtk::TextTag {
+        let name = format!("hang:{n}");
+        if let Some(t) = self.tag(&name) {
+            return t;
+        }
+        let t = self.buffer.create_tag(Some(&name), &[]).expect("new tag");
+        self.set_hang_metrics(&t, n, self.char_width());
+        t
+    }
+
+    /// A negative indent is Pango's hanging indent: the first line stays at
+    /// the margin, the following ones move right by that much.
+    fn set_hang_metrics(&self, t: &gtk::TextTag, n: i32, cw: f64) {
+        t.set_indent(-((n as f64 * cw).round() as i32));
+    }
+
+    /// Width of a character of the text font (the text is monospace).
+    fn char_width(&self) -> f64 {
+        let layout = self.view.create_pango_layout(Some("0000000000"));
+        (layout.pixel_size().0 as f64 / 10.0).max(4.0)
+    }
+
+    /// After a zoom or font change.
+    pub fn refresh_hang(&self) {
+        let cw = self.char_width();
+        for n in 1..=MAX_HANG {
+            if let Some(t) = self.tag(&format!("hang:{n}")) {
+                self.set_hang_metrics(&t, n, cw);
             }
         }
     }
@@ -1840,7 +1985,7 @@ impl Tab {
         if let Some(sheet) = self.csv.borrow().as_ref() {
             let (s, e) = self.buffer.bounds();
             let rows = crate::csv::rows_of(&self.model_range(s.offset(), e.offset()));
-            return if rows == sheet.baseline { sheet.text.clone() } else { crate::csv::write(&rows, sheet.format) };
+            return sheet.text_for(&rows);
         }
         if self.markdown.get() {
             self.to_markdown()
@@ -1937,6 +2082,7 @@ impl Tab {
     /// a table cannot hold it.
     pub fn set_content(&self, text: &str, markdown: bool) {
         *self.csv.borrow_mut() = None;
+        *self.rich_history.borrow_mut() = None;
         let kind = self.path.borrow().as_deref().and_then(crate::csv::kind);
         match kind {
             Some(delim) if markdown => {
@@ -1946,8 +2092,12 @@ impl Tab {
                         self.render_content(&md, true);
                         let (s, e) = self.buffer.bounds();
                         let baseline = crate::csv::rows_of(&self.model_range(s.offset(), e.offset()));
-                        let format = crate::csv::format_of(text, delim);
-                        *self.csv.borrow_mut() = Some(crate::csv::Sheet { format, baseline, text: text.to_string() });
+                        // The file's conventions (line ends, final newline)
+                        // win over those of a raw edit.
+                        let file = self.disk.borrow().clone();
+                        let format = crate::csv::format_of(file.as_deref().unwrap_or(text), delim);
+                        let disk = file.filter(|d| d != text).and_then(|d| crate::csv::shown_rows(&d, delim).map(|r| (r, d)));
+                        *self.csv.borrow_mut() = Some(crate::csv::Sheet { format, baseline, text: text.to_string(), disk });
                     }
                     None => self.render_content(text, false),
                 }
@@ -1981,10 +2131,11 @@ impl Tab {
                 s.format.delim = delim.unwrap_or(',');
                 s.baseline.clear();
                 s.text.clear();
+                s.disk = None;
             }
             None => {
                 let format = crate::csv::Format { delim: delim.unwrap_or(','), crlf: false, final_newline: true };
-                *csv = Some(crate::csv::Sheet { format, baseline: Vec::new(), text: String::new() });
+                *csv = Some(crate::csv::Sheet { format, baseline: Vec::new(), text: String::new(), disk: None });
             }
         }
     }
@@ -2000,6 +2151,7 @@ impl Tab {
             text
         };
         self.busy.set(self.busy.get() + 1);
+        self.rendering.set(true);
         self.buffer.begin_irreversible_action();
         self.markdown.set(markdown);
         let (mut s, mut e) = self.buffer.bounds();
@@ -2013,11 +2165,20 @@ impl Tab {
             self.buffer.set_language(None);
             let mut it = self.buffer.start_iter();
             self.insert_lines(&mut it, &model::parse(text));
+            for line in 0..self.buffer.line_count() {
+                let info = self.line_info(line);
+                if info.is_list() {
+                    let (start, mut end) = self.line_bounds(line);
+                    end.forward_char();
+                    self.apply_hang(&info, &start, &end);
+                }
+            }
         } else {
             self.buffer.set_text(text);
             self.buffer.set_language(self.guess_language().as_ref());
         }
         self.buffer.end_irreversible_action();
+        self.rendering.set(false);
         // Markdown tabs undo through Markdown snapshots (see `undo`): GTK's
         // own history knows the text, not its formatting.
         self.buffer.set_enable_undo(!markdown);
@@ -2043,7 +2204,25 @@ impl Tab {
         let cur = self.cursor().offset();
         let text = self.content();
         let rich = !self.markdown.get();
+        // Undo reaches across the switch: the rich history is kept while
+        // the source shows, and edits made there become one step.
+        let kept = if rich {
+            self.rich_history.borrow_mut().take()
+        } else {
+            self.checkpoint();
+            Some((self.history.borrow().clone(), self.hist_pos.get()))
+        };
         self.set_content(&text, rich);
+        if !rich {
+            *self.rich_history.borrow_mut() = kept;
+        } else if self.markdown.get()
+            && let Some((h, pos)) = kept
+        {
+            *self.history.borrow_mut() = h;
+            self.hist_pos.set(pos);
+            self.hist_dirty.set(true);
+            self.checkpoint();
+        }
         let off = cur.min(self.buffer.char_count());
         self.buffer.place_cursor(&self.buffer.iter_at_offset(off));
         self.scroll_to_cursor();
@@ -2462,6 +2641,31 @@ impl Tab {
         self.buffer.place_cursor(&target);
     }
 
+    /// A list line's bullet, number or checkbox is not text: typing before
+    /// it would turn the item into a paragraph starting with the glyph. The
+    /// caret goes to the item's text, or, when stepping left from there, to
+    /// the end of the previous line.
+    fn keep_caret_off_markers(&self) {
+        let cur = self.cursor();
+        let off = cur.offset();
+        let prev = self.caret_offset.replace(off);
+        if self.busy.get() > 0 || !self.markdown.get() || self.buffer.has_selection() {
+            return;
+        }
+        let info = self.line_info(cur.line());
+        let content = info.start + info.prefix;
+        if !info.is_list() || off >= content {
+            return;
+        }
+        let target = if prev == content && off == content - 1 && cur.line() > 0 {
+            self.line_bounds(cur.line() - 1).1
+        } else {
+            self.buffer.iter_at_offset(content)
+        };
+        self.caret_offset.set(target.offset());
+        self.buffer.place_cursor(&target);
+    }
+
     /// Width for tables: the text column, and the whole view when wide.
     fn table_space(&self) -> (i32, i32) {
         let width = self.scrolled.width().max(300);
@@ -2607,6 +2811,19 @@ impl Tab {
                 if let Some(t) = me.upgrade() {
                     t.notify();
                     t.schedule_table_sync();
+                }
+            }
+        }));
+        *tv.on_undo.borrow_mut() = Some(Rc::new({
+            let me = me.clone();
+            move |redo| {
+                if let Some(t) = me.upgrade() {
+                    if redo {
+                        t.redo();
+                    } else {
+                        t.undo();
+                    }
+                    t.view.grab_focus();
                 }
             }
         }));
@@ -2972,6 +3189,7 @@ impl Tab {
         let first = if self.markdown.get() { self.to_markdown() } else { String::new() };
         *self.history.borrow_mut() = vec![(first, self.cursor_offset())];
         self.hist_pos.set(0);
+        self.hist_dirty.set(true);
     }
 
     /// Records the current state if it changed since the last record.
@@ -2982,8 +3200,14 @@ impl Tab {
         if !self.markdown.get() || self.restoring.get() {
             return;
         }
-        let md = self.to_markdown();
-        let cursor = self.cursor_offset();
+        self.push_step(self.to_markdown(), self.cursor_offset());
+    }
+
+    /// Records a state unless it is the current step.
+    fn push_step(&self, md: String, cursor: i32) {
+        if !self.markdown.get() || self.restoring.get() {
+            return;
+        }
         let mut h = self.history.borrow_mut();
         let pos = self.hist_pos.get();
         if h.get(pos).is_some_and(|(m, _)| *m == md) {
@@ -2996,6 +3220,7 @@ impl Tab {
             h.remove(0);
         }
         self.hist_pos.set(h.len() - 1);
+        self.hist_dirty.set(true);
     }
 
     /// Typing records a step after a short pause (and at each word, see
@@ -3034,27 +3259,83 @@ impl Tab {
     }
 
     fn restore_step(&self, i: usize) {
-        let Some((md, cursor)) = self.history.borrow().get(i).cloned() else { return };
+        let Some((md, _)) = self.history.borrow().get(i).cloned() else { return };
         self.restoring.set(true);
         let adj = self.scrolled.vadjustment();
         let scroll = adj.value();
         let wide = self.wide_tables();
+        let (s, e) = self.buffer.bounds();
+        let old: Vec<char> = self.buffer.text(&s, &e, true).chars().collect();
+        let old_cursor = self.cursor_offset();
         self.render_content(&md, true);
         self.set_wide_tables(&wide);
         self.hist_pos.set(i);
-        let off = cursor.clamp(0, self.buffer.char_count());
+        self.hist_dirty.set(true);
+        // The caret goes to where the text changed, not to where it was
+        // when that state was recorded; a change of formatting only leaves
+        // it in place.
+        let (s, e) = self.buffer.bounds();
+        let new: Vec<char> = self.buffer.text(&s, &e, true).chars().collect();
+        let off = if old == new { old_cursor } else { change_end(&old, &new) as i32 };
+        let off = off.clamp(0, self.buffer.char_count());
         self.buffer.place_cursor(&self.buffer.iter_at_offset(off));
         adj.set_value(scroll);
-        glib::idle_add_local_once(move || adj.set_value(scroll));
+        // Same scroll as before, unless the change is off screen.
+        let (view, mark) = (self.view.clone(), self.buffer.get_insert());
+        glib::idle_add_local_once(move || {
+            adj.set_value(scroll);
+            view.scroll_mark_onscreen(&mark);
+        });
         self.restoring.set(false);
         self.notify();
-        self.view.scroll_mark_onscreen(&self.buffer.get_insert());
+    }
+
+    /// The Markdown undo history and its current step, to save it; empty
+    /// for plain text (GTK's own history, which is not kept).
+    pub fn with_history<R>(&self, f: impl FnOnce(&[(String, i32)], usize) -> R) -> R {
+        if self.markdown.get() {
+            f(&self.history.borrow(), self.hist_pos.get())
+        } else if let Some((h, pos)) = self.rich_history.borrow().as_ref() {
+            f(h, *pos)
+        } else {
+            f(&[], 0)
+        }
+    }
+
+    /// Puts back a saved history. The current text becomes a step on top
+    /// when it differs from the saved current step (the file changed in
+    /// between): undo then goes back to before that change.
+    pub fn restore_history(&self, steps: Vec<(String, i32)>, pos: usize) {
+        if steps.is_empty() || self.readonly.get() {
+            return;
+        }
+        let pos = pos.min(steps.len() - 1);
+        if self.markdown.get() {
+            *self.history.borrow_mut() = steps;
+            self.hist_pos.set(pos);
+            self.checkpoint();
+        } else if self.path.borrow().as_deref().is_none_or(|p| {
+            matches!(p.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref(), Some("md" | "markdown" | "mdown" | "mkd"))
+                || crate::csv::is_csv_path(p)
+        }) {
+            // Shown as source: the rich view gets it back.
+            *self.rich_history.borrow_mut() = Some((steps, pos));
+        }
+        self.hist_dirty.set(false);
     }
 
     pub fn set_readonly(&self, ro: bool) {
         self.readonly.set(ro);
         self.view.set_editable(!ro);
     }
+}
+
+/// Where the changed region ends in `new`, compared with `old`.
+fn change_end(old: &[char], new: &[char]) -> usize {
+    let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
+    let max_suffix = old.len().min(new.len()) - prefix;
+    let suffix = old.iter().rev().zip(new.iter().rev()).take(max_suffix).take_while(|(a, b)| a == b).count();
+    new.len() - suffix
 }
 
 /// Keeps fenced code consistent after free editing (deleted fences etc.).
@@ -3096,4 +3377,21 @@ pub fn launch_uri(url: &str) {
             eprintln!("calepin: cannot open link: {e}");
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::change_end;
+
+    fn end(a: &str, b: &str) -> usize {
+        change_end(&a.chars().collect::<Vec<_>>(), &b.chars().collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn caret_goes_to_the_change() {
+        assert_eq!(end("abc Alpha", "abc "), 4); // insertion undone
+        assert_eq!(end("abc ", "abc Alpha"), 9); // redone
+        assert_eq!(end("xaay", "xay"), 2); // repeated letters
+        assert_eq!(end("Titre\nfin", "Titre\nXfin"), 7);
+    }
 }

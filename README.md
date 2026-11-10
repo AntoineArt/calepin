@@ -115,7 +115,10 @@ Enter on an empty list item leaves the list; Backspace at the start of a
 heading or quote turns it back into text; Tab and Shift+Tab indent lists.
 Click a checkbox to tick it, Ctrl+click to open a link. Copy and paste go
 through Markdown; Ctrl+Shift+V pastes plain text. Ctrl+Z undoes text and
-formatting together (the history keeps the Markdown).
+formatting together (the history keeps the Markdown), table edits included,
+a word at a time; right after an automatic format (`**bold**`, `- `), it first
+gives back what you typed. The undo history of Markdown and CSV tabs survives
+a restart.
 
 ## Shortcuts
 

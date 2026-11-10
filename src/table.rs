@@ -38,6 +38,9 @@ pub struct TableView {
     pub on_select_all: RefCell<Option<Callback>>,
     /// Width mode toggled.
     pub on_resize: RefCell<Option<Callback>>,
+    /// Ctrl+Z (false) or Ctrl+Shift+Z / Ctrl+Y (true): the document's
+    /// history, which holds the tables too.
+    pub on_undo: RefCell<Option<ExitCallback>>,
     colors: Cell<CellColors>,
 }
 
@@ -261,6 +264,7 @@ impl TableView {
             char_width: Cell::new(8.0),
             on_change: RefCell::new(None),
             on_exit: RefCell::new(None),
+            on_undo: RefCell::new(None),
             on_delete: RefCell::new(None),
             on_select_all: RefCell::new(None),
             on_resize: RefCell::new(None),
@@ -337,11 +341,21 @@ impl TableView {
     }
 
     /// Widths the table may use: within the text column, and when wide.
+    /// Also lays out again when the cells' font changed: a new table gets
+    /// the theme's font only after its first layout.
     pub fn set_available(&self, normal: i32, wide: i32) {
-        if self.avail.get() != (normal, wide) {
+        if self.avail.get() != (normal, wide) || self.measure_char_width().is_some_and(|cw| cw != self.char_width.get()) {
             self.avail.set((normal, wide));
             self.layout();
         }
+    }
+
+    /// Width of a digit in the cells' current font.
+    fn measure_char_width(&self) -> Option<f64> {
+        let cells = self.cells.borrow();
+        let first = cells.first().and_then(|r| r.first())?;
+        let layout = first.create_pango_layout(Some("0000000000"));
+        Some((layout.pixel_size().0 as f64 / 10.0).max(4.0))
     }
 
     pub fn max_width(&self) -> i32 {
@@ -373,12 +387,8 @@ impl TableView {
     /// Shares the available width between columns: each wants its longest
     /// text, keeps at least its longest word, and wraps beyond.
     fn layout(&self) {
+        let Some(cw) = self.measure_char_width() else { return };
         let cells = self.cells.borrow();
-        let Some(first) = cells.first().and_then(|r| r.first()) else { return };
-        let cw = {
-            let layout = first.create_pango_layout(Some("0000000000"));
-            (layout.pixel_size().0 as f64 / 10.0).max(4.0)
-        };
         let px = |chars: usize| (chars as f64 * cw).ceil() as i32 + CELL_PAD;
         let (rows, cols) = (self.rows(), self.cols());
         let mut want = Vec::with_capacity(cols);
@@ -425,6 +435,8 @@ impl TableView {
                 tv.set_left_margin(8);
                 tv.set_right_margin(8);
                 render_cell(&tv.buffer(), &self.cell(r, c), &self.colors.get());
+                // The cell's own history would undo its initial text.
+                tv.buffer().set_enable_undo(false);
                 // Typed text takes the style of the character before it.
                 let weak = Rc::downgrade(self);
                 // Right after a closed span, typing goes on unstyled.
@@ -696,6 +708,14 @@ impl TableView {
         let (rows, cols) = (self.rows(), self.cols());
         let back_tab = k == gdk::Key::ISO_Left_Tab || (k == gdk::Key::Tab && shift);
         match k {
+            gdk::Key::z | gdk::Key::Z | gdk::Key::y | gdk::Key::Y if ctrl => {
+                let redo = shift || matches!(k, gdk::Key::y | gdk::Key::Y);
+                let cb = self.on_undo.borrow().clone();
+                if let Some(cb) = cb {
+                    cb(redo);
+                }
+                true
+            }
             gdk::Key::Tab | gdk::Key::ISO_Left_Tab if !back_tab => {
                 if c + 1 < cols {
                     self.focus_cell(r, c + 1);

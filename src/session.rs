@@ -134,6 +134,83 @@ pub fn load_content(id: &str) -> Option<String> {
 
 pub fn delete_content(id: &str) {
     let _ = std::fs::remove_file(content_path(id));
+    let _ = std::fs::remove_file(history_path(id));
+}
+
+// ---------------------------------------------------------------------------
+// Undo history, kept across restarts. Each state of a document is stored
+// once under undo/<key>.md (written once, shared, never rewritten); a tab's
+// small index lists its states and the current step.
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, Deserialize, Default)]
+struct UndoIndex {
+    pos: usize,
+    /// (state key, caret offset), oldest first.
+    steps: Vec<(String, i32)>,
+}
+
+fn undo_dir() -> PathBuf {
+    dir().join("undo")
+}
+
+fn history_path(id: &str) -> PathBuf {
+    tabs_dir().join(format!("{id}.undo.json"))
+}
+
+/// Content key of a state: its hash and length.
+fn state_key(text: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut h);
+    format!("{:016x}-{:x}", h.finish(), text.len())
+}
+
+pub fn save_history(id: &str, steps: &[(String, i32)], pos: usize) {
+    // A single step: nothing to undo, no copy of the document to keep.
+    if steps.len() < 2 {
+        let _ = std::fs::remove_file(history_path(id));
+        return;
+    }
+    let mut index = UndoIndex { pos, steps: Vec::with_capacity(steps.len()) };
+    for (text, cursor) in steps {
+        let key = state_key(text);
+        let path = undo_dir().join(format!("{key}.md"));
+        if !path.exists()
+            && let Err(e) = write_atomic(&path, text.as_bytes())
+        {
+            eprintln!("calepin: cannot save undo history: {e}");
+            return;
+        }
+        index.steps.push((key, *cursor));
+    }
+    if let Ok(json) = serde_json::to_vec(&index) {
+        let _ = write_atomic(&history_path(id), &json);
+    }
+}
+
+/// A tab's history: its states and current step. States whose file went
+/// missing cut the history there (the older steps are dropped).
+pub fn load_history(id: &str) -> Option<(Vec<(String, i32)>, usize)> {
+    let bytes = std::fs::read(history_path(id)).ok()?;
+    let index: UndoIndex = serde_json::from_slice(&bytes).ok()?;
+    let mut steps = Vec::with_capacity(index.steps.len());
+    let mut pos = index.pos;
+    for (i, (key, cursor)) in index.steps.iter().enumerate() {
+        match std::fs::read(undo_dir().join(format!("{key}.md"))).ok().and_then(|b| String::from_utf8(b).ok()) {
+            Some(text) => steps.push((text, *cursor)),
+            None if i <= index.pos => {
+                steps.clear();
+                pos = index.pos.saturating_sub(i + 1);
+            }
+            None => break,
+        }
+    }
+    if steps.is_empty() {
+        return None;
+    }
+    let pos = pos.min(steps.len() - 1);
+    Some((steps, pos))
 }
 
 /// Removes content files that no tab or closed tab refers to.
@@ -143,12 +220,25 @@ pub fn gc(session: &Session) {
         .iter()
         .chain(session.closed.iter())
         .chain(session.detached.iter().flatten())
-        .map(|t| format!("{}.md", t.id))
+        .flat_map(|t| [format!("{}.md", t.id), format!("{}.undo.json", t.id)])
         .collect();
+    let mut states = std::collections::HashSet::new();
     if let Ok(entries) = std::fs::read_dir(tabs_dir()) {
         for e in entries.flatten() {
             let name = e.file_name().to_string_lossy().to_string();
             if !keep.contains(&name) {
+                let _ = std::fs::remove_file(e.path());
+            } else if name.ends_with(".undo.json")
+                && let Some(index) = std::fs::read(e.path()).ok().and_then(|b| serde_json::from_slice::<UndoIndex>(&b).ok())
+            {
+                states.extend(index.steps.into_iter().map(|(k, _)| format!("{k}.md")));
+            }
+        }
+    }
+    // States no history refers to any more.
+    if let Ok(entries) = std::fs::read_dir(undo_dir()) {
+        for e in entries.flatten() {
+            if !states.contains(&e.file_name().to_string_lossy().to_string()) {
                 let _ = std::fs::remove_file(e.path());
             }
         }
@@ -158,4 +248,33 @@ pub fn gc(session: &Session) {
 pub fn new_id() -> String {
     let now = glib::real_time();
     format!("{now:x}{:04x}", glib::random_int_range(0, 0xffff))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn history_round_trip_and_gc() {
+        let tmp = std::env::temp_dir().join(format!("calepin-test-{}", std::process::id()));
+        // SAFETY: the only test touching the environment.
+        unsafe { std::env::set_var("XDG_STATE_HOME", &tmp) };
+        let steps = vec![("a".to_string(), 0), ("a b".to_string(), 3), ("a".to_string(), 1)];
+        save_history("t1", &steps, 1);
+        assert_eq!(load_history("t1"), Some((steps.clone(), 1)));
+        // The repeated state is stored once.
+        assert_eq!(std::fs::read_dir(undo_dir()).unwrap().count(), 2);
+        // A lost older state drops the steps before it.
+        let first = undo_dir().join(format!("{}.md", state_key("a b")));
+        std::fs::remove_file(first).unwrap();
+        assert_eq!(load_history("t1"), Some((vec![("a".to_string(), 1)], 0)));
+        // A tab that no longer exists: its index and states go.
+        save_history("t2", &[("x".to_string(), 0), ("xy".to_string(), 2)], 1);
+        let session = Session { tabs: vec![TabState { id: "t2".into(), ..Default::default() }], ..load() };
+        gc(&session);
+        assert!(load_history("t1").is_none());
+        assert!(load_history("t2").is_some());
+        assert_eq!(std::fs::read_dir(undo_dir()).unwrap().count(), 2);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }

@@ -161,6 +161,36 @@ fn valid_hex(v: &str) -> bool {
     v.starts_with('#') && (h.len() == 6 || h.len() == 8) && h.chars().all(|c| c.is_ascii_hexdigit())
 }
 
+fn rgb(hex: &str) -> [f64; 3] {
+    let h = hex.trim_start_matches('#');
+    let p = |i: usize| h.get(i..i + 2).and_then(|x| u8::from_str_radix(x, 16).ok()).unwrap_or(0) as f64 / 255.0;
+    [p(0), p(2), p(4)]
+}
+
+fn luminance(c: [f64; 3]) -> f64 {
+    let l = |x: f64| if x <= 0.03928 { x / 12.92 } else { ((x + 0.055) / 1.055).powf(2.4) };
+    0.2126 * l(c[0]) + 0.7152 * l(c[1]) + 0.0722 * l(c[2])
+}
+
+/// WCAG contrast ratio between two colours.
+fn contrast(a: [f64; 3], b: [f64; 3]) -> f64 {
+    let (la, lb) = (luminance(a), luminance(b));
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+}
+
+/// `color` moved toward `toward` until it reads at `ratio` on `bg`.
+fn legible_over(color: &str, toward: &str, bg: &str, ratio: f64) -> String {
+    let (c, t, b) = (rgb(color), rgb(toward), rgb(bg));
+    for step in 0..=20 {
+        let k = step as f64 / 20.0;
+        let m = [0, 1, 2].map(|i| c[i] + (t[i] - c[i]) * k);
+        if contrast(m, b) >= ratio || step == 20 {
+            return format!("#{:02x}{:02x}{:02x}", (m[0] * 255.0).round() as u8, (m[1] * 255.0).round() as u8, (m[2] * 255.0).round() as u8);
+        }
+    }
+    unreachable!()
+}
+
 impl Theme {
     pub fn load() -> Theme {
         let text = std::fs::read_to_string(theme_state_dir().join("theme/colors.toml")).unwrap_or_default();
@@ -219,6 +249,17 @@ impl Theme {
         .to_string()
     }
 
+    /// A secondary colour used for text, brought toward the foreground when
+    /// the theme's own is too faint to read on the background (Omarchy's
+    /// `muted` is often meant for decoration).
+    pub fn legible(&self, key: &str, ratio: f64) -> String {
+        legible_over(&self.c(key), &self.c("foreground"), &self.c("background"), ratio)
+    }
+
+    pub fn legible_rgba(&self, key: &str, ratio: f64) -> gdk::RGBA {
+        gdk::RGBA::parse(self.legible(key, ratio)).unwrap_or(gdk::RGBA::BLACK)
+    }
+
     pub fn rgba(&self, key: &str) -> gdk::RGBA {
         gdk::RGBA::parse(self.c(key)).unwrap_or(gdk::RGBA::BLACK)
     }
@@ -239,7 +280,8 @@ impl Theme {
         let bg = self.c("background");
         let fg = self.c("foreground");
         let accent = self.c("accent");
-        let muted = self.c("muted");
+        // Tab names, counts, table controls: secondary, but text.
+        let muted = self.legible("muted", 3.0);
         let dbg = self.c("dark_background");
         let ddbg = self.c("darker_background");
         let sel = self.c("selection");
@@ -385,7 +427,7 @@ window.calepin .minimap slider {{ background: alpha({accent}, 0.14); }}
             bg = k("background"),
             sel = k("selection"),
             accent = k("accent"),
-            muted = k("muted"),
+            muted = self.legible("muted", 3.0),
             red = k("red"),
             green = k("green"),
             yellow = k("yellow"),
@@ -462,4 +504,18 @@ pub fn watch(on_change: impl Fn(Theme) + 'static) -> Vec<gio::FileMonitor> {
         let _ = id;
     }
     monitors
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn faint_colours_become_legible() {
+        // Catppuccin Latte's muted on its background: about 1.9:1.
+        let c = legible_over("#acb0be", "#4c4f69", "#eff1f5", 3.0);
+        assert!(contrast(rgb(&c), rgb("#eff1f5")) >= 3.0);
+        // Already legible: unchanged.
+        assert_eq!(legible_over("#808080", "#ffffff", "#000000", 3.0), "#808080");
+    }
 }

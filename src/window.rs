@@ -164,6 +164,11 @@ fn is_rich_path(p: &Path) -> bool {
     is_markdown_path(p) || crate::csv::is_csv_path(p)
 }
 
+fn save_history(tab: &Tab) {
+    tab.hist_dirty.set(false);
+    tab.with_history(|steps, pos| session::save_history(&tab.id, steps, pos));
+}
+
 fn is_markdown_path(p: &Path) -> bool {
     matches!(
         p.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref(),
@@ -505,6 +510,13 @@ impl Window {
         for w in all_windows() {
             for t in w.tabs.borrow().iter() {
                 t.schedule_table_sync();
+                // The new font size applies at the next style update.
+                let weak = Rc::downgrade(t);
+                glib::timeout_add_local_once(std::time::Duration::from_millis(50), move || {
+                    if let Some(t) = weak.upgrade() {
+                        t.refresh_hang();
+                    }
+                });
             }
         }
         // Saved with the session: the size stays for every later use.
@@ -743,6 +755,7 @@ impl Window {
             session::delete_content(&tab.id);
         } else {
             session::save_content(&tab.id, &content);
+            save_history(tab);
             let state = self.tab_state(tab);
             let mut s = self.session.borrow_mut();
             s.closed.retain(|c| c.id != state.id);
@@ -778,6 +791,7 @@ impl Window {
     fn take_tab(self: &Rc<Self>, idx: usize) -> Option<TabRef> {
         let tab = self.tabs.borrow().get(idx).cloned()?;
         session::save_content(&tab.id, &tab.content());
+        save_history(&tab);
         self.changed.borrow_mut().remove(&tab.id);
         if self.find_tab.borrow().as_deref() == Some(tab.id.as_str()) {
             self.clear_find_marks();
@@ -933,6 +947,10 @@ impl Window {
         }
         tab.set_wide_tables(&state.wide_tables);
         tab.restore_cursor(state.cursor);
+        // Undo goes on where it was before the restart.
+        if let Some((steps, pos)) = session::load_history(&state.id) {
+            tab.restore_history(steps, pos);
+        }
         self.watch_file(&tab);
         tab
     }
@@ -1270,6 +1288,9 @@ impl Window {
             for tab in w.tabs.borrow().iter() {
                 if changed.contains(&tab.id) {
                     session::save_content(&tab.id, &tab.content());
+                }
+                if tab.hist_dirty.replace(false) {
+                    save_history(tab);
                 }
             }
         }
