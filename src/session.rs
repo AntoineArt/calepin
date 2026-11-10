@@ -24,6 +24,9 @@ pub struct TabState {
     /// First lines of the folded regions.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub folds: Vec<i32>,
+    /// Column widths set by hand, per table (0: automatic).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub table_widths: Vec<Vec<i32>>,
 }
 
 fn yes() -> bool {
@@ -45,6 +48,9 @@ pub struct Session {
     pub toolbar: bool,
     #[serde(default = "default_size")]
     pub font_size: f64,
+    /// Middle click: fast scrolling (true) or paste.
+    #[serde(default = "yes")]
+    pub middle_scroll: bool,
     /// Tabs of detached windows, by window.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub detached: Vec<Vec<TabState>>,
@@ -63,6 +69,7 @@ impl Default for Session {
             minimap: true,
             toolbar: true,
             font_size: default_size(),
+            middle_scroll: true,
             detached: Vec::new(),
         }
     }

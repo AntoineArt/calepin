@@ -393,6 +393,7 @@ impl Window {
         w.connect_find(&prev, &next, &close);
         w.setup_shortcuts();
         w.setup_drop();
+        w.setup_middle_click();
 
         let weak = Rc::downgrade(&w);
         new_btn.connect_clicked(move |_| {
@@ -737,6 +738,7 @@ impl Window {
             cursor: tab.cursor_offset(),
             wide_tables: tab.wide_tables(),
             folds: tab.folded_lines(),
+            table_widths: tab.table_widths(),
         }
     }
 
@@ -947,6 +949,7 @@ impl Window {
             tab.set_disk(d);
         }
         tab.set_wide_tables(&state.wide_tables);
+        tab.set_table_widths(&state.table_widths);
         tab.refold(&state.folds);
         tab.restore_cursor(state.cursor);
         // Undo goes on where it was before the restart.
@@ -1490,6 +1493,25 @@ impl Window {
                 (false, false) => "Back to the rendered view (Ctrl+Shift+E)",
             })));
         }
+    }
+
+    /// "win.middle-scroll", the right-click menu's check item: what the
+    /// middle click does, kept in the session.
+    fn setup_middle_click(self: &Rc<Self>) {
+        let on = self.session.borrow().middle_scroll;
+        crate::editor::set_middle_scroll(on);
+        let action = gio::SimpleAction::new_stateful("middle-scroll", None, &on.to_variant());
+        let weak = Rc::downgrade(self);
+        action.connect_activate(move |a, _| {
+            let on = !a.state().and_then(|v| v.get::<bool>()).unwrap_or(true);
+            a.set_state(&on.to_variant());
+            crate::editor::set_middle_scroll(on);
+            if let Some(w) = weak.upgrade() {
+                w.session.borrow_mut().middle_scroll = on;
+                w.save_session();
+            }
+        });
+        self.win.add_action(&action);
     }
 
     fn with_tab(&self, f: impl FnOnce(&Tab)) {

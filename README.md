@@ -68,6 +68,9 @@ tag; the `release.yml` workflow builds the binary and creates the release.
   instance (single instance), `calepin --new` opens an empty tab,
   `calepin --background` loads everything without showing a window (for
   session autostart), `calepin --version` prints the version.
+- Middle click: fast scrolling (move away from where you clicked, click
+  again or Escape to stop; or hold the button). Right-click → "Middle click:
+  fast scroll" turns it off, and the middle click pastes again.
 - Closing the window only hides it: the process stays resident so it shows up
   instantly next time. Ctrl+Q really quits.
 - Every tab is saved continuously (`~/.local/state/calepin/`), even a note
@@ -114,7 +117,11 @@ Syntax disappears as soon as it is complete: `# ` `## ` `### ` headings,
 `` `code` ``, `[text](url)`, bare URLs.
 
 Tables: `| a | b |`, Enter, `|---|---|`, Enter (or the ▦ button,
-Ctrl+Alt+T). Tab and Shift+Tab move between cells, Tab on the last cell adds a
+Ctrl+Alt+T). Drag across cells (or Shift+click, Shift+arrows) to select
+several: Ctrl+C copies them as tab-separated text, Ctrl+X and Delete clear
+them, and tab-separated text pasted into a cell fills the cells from there.
+Drag a column's border to resize it (kept with the tab). A table wider than
+its room scrolls sideways: Shift+wheel, a sideways swipe or its scrollbar. Tab and Shift+Tab move between cells, Tab on the last cell adds a
 row, Escape leaves the table. Cell text wraps; "⇔ Widen" lets a table extend
 past the text column.
 

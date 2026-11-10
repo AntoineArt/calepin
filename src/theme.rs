@@ -353,6 +353,7 @@ window.calepin textview.mw-cell.last-row {{ border-bottom: none; }}
 window.calepin textview.mw-cell.header, window.calepin textview.mw-cell.header text {{ background: {dbg}; font-weight: bold; }}
 window.calepin textview.mw-cell:focus-within, window.calepin textview.mw-cell:focus-within text {{ background: alpha({accent}, 0.10); }}
 window.calepin textview.mw-cell text selection {{ background: alpha({accent}, 0.40); color: {fg}; }}
+window.calepin textview.mw-cell.picked, window.calepin textview.mw-cell.picked text {{ background: alpha({accent}, 0.28); }}
 window.calepin .mw-table.selected .mw-grid {{ border-color: {sel}; }}
 window.calepin .mw-table.selected textview.mw-cell, window.calepin .mw-table.selected textview.mw-cell text {{ background: {sel}; }}
 window.calepin .mw-table-controls button {{

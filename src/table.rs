@@ -36,8 +36,22 @@ pub struct TableView {
     pub on_delete: RefCell<Option<Callback>>,
     /// Ctrl+A in a cell whose text is already all selected: select the table.
     pub on_select_all: RefCell<Option<Callback>>,
-    /// Width mode toggled.
+    /// Width mode toggled, or a column resized.
     pub on_resize: RefCell<Option<Callback>>,
+    /// Column widths set by dragging a border (None: automatic).
+    manual: RefCell<Vec<Option<i32>>>,
+    /// Columns share the width available and wrap (Markdown); otherwise
+    /// they keep their text's width and the table scrolls (CSV data).
+    fit: Cell<bool>,
+    /// Cells selected together: anchor and moving end, (row, column).
+    sel: Cell<Option<((usize, usize), (usize, usize))>>,
+    /// Cells drawn as selected.
+    picked: RefCell<Vec<(usize, usize)>>,
+    /// Drag under way: resizing a column (column, width at start), or
+    /// started in a cell (selecting cells once it reaches another).
+    resizing: Cell<Option<(usize, i32)>>,
+    drag_from: Cell<Option<((usize, usize), (f64, f64))>>,
+    resize_cursor: Cell<bool>,
     /// Ctrl+Z (false) or Ctrl+Shift+Z / Ctrl+Y (true): the document's
     /// history, which holds the tables too.
     pub on_undo: RefCell<Option<ExitCallback>>,
@@ -235,7 +249,7 @@ impl TableView {
         grid.set_halign(gtk::Align::Start);
         let scroller = gtk::ScrolledWindow::builder()
             .child(&grid)
-            .hscrollbar_policy(gtk::PolicyType::Automatic)
+            .hscrollbar_policy(gtk::PolicyType::External)
             .vscrollbar_policy(gtk::PolicyType::Never)
             .propagate_natural_width(true)
             .propagate_natural_height(true)
@@ -245,6 +259,14 @@ impl TableView {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 2);
         root.add_css_class("mw-table");
         root.append(&scroller);
+        // GTK's own scrollbar showed above the table (drawn in the overlay):
+        // this one sits under it, only while the table is wider than its room.
+        let hbar = gtk::Scrollbar::new(gtk::Orientation::Horizontal, Some(&scroller.hadjustment()));
+        hbar.add_css_class("mw-table-scrollbar");
+        hbar.set_visible(false);
+        let bar = hbar.clone();
+        scroller.hadjustment().connect_changed(move |a| bar.set_visible(a.upper() > a.page_size() + 1.0));
+        root.append(&hbar);
         root.append(&controls);
         controls.set_opacity(0.0);
         let wide = table.wide;
@@ -268,6 +290,13 @@ impl TableView {
             on_delete: RefCell::new(None),
             on_select_all: RefCell::new(None),
             on_resize: RefCell::new(None),
+            manual: RefCell::new(Vec::new()),
+            fit: Cell::new(true),
+            sel: Cell::new(None),
+            picked: RefCell::new(Vec::new()),
+            resizing: Cell::new(None),
+            drag_from: Cell::new(None),
+            resize_cursor: Cell::new(false),
             colors: Cell::new(CellColors { code_fg: gdk::RGBA::RED, code_bg: gdk::RGBA::WHITE, link: gdk::RGBA::BLUE }),
         });
 
@@ -312,10 +341,18 @@ impl TableView {
         let c = tv.controls.clone();
         focus.connect_enter(move |_| c.set_opacity(1.0));
         let c = tv.controls.clone();
-        focus.connect_leave(move |_| c.set_opacity(0.0));
+        let weak = Rc::downgrade(&tv);
+        focus.connect_leave(move |_| {
+            c.set_opacity(0.0);
+            // Out of the table: its cells are no longer selected.
+            if let Some(t) = weak.upgrade() {
+                t.set_cell_selection(None);
+            }
+        });
         tv.root.add_controller(focus);
 
         tv.update_wide_button();
+        tv.connect_grid_gestures();
         tv.rebuild();
         tv
     }
@@ -407,7 +444,16 @@ impl TableView {
         }
         let avail = self.max_width() - 2;
         let total: i32 = want.iter().sum();
-        let widths: Vec<i32> = if total <= avail { want } else { share(&want, &min, avail) };
+        let mut manual = self.manual.borrow_mut();
+        manual.resize(cols, None);
+        let widths: Vec<i32> = if self.fit.get() && manual.iter().all(Option::is_none) {
+            if total <= avail { want } else { share(&want, &min, avail) }
+        } else {
+            // Natural widths (long texts still wrap past 60 characters) and
+            // the user's own; the table scrolls sideways when too wide.
+            (0..cols).map(|c| manual[c].unwrap_or_else(|| want[c].min(px(60)))).collect()
+        };
+        drop(manual);
         for row in cells.iter() {
             for (c, cell) in row.iter().enumerate() {
                 cell.set_size_request(widths[c], -1);
@@ -674,6 +720,13 @@ impl TableView {
         }
     }
 
+    /// The pointer cursor over every cell (None: the usual text cursor).
+    pub fn set_cursor(&self, name: Option<&str>) {
+        for cell in self.cells.borrow().iter().flatten() {
+            cell.set_cursor_from_name(Some(name.unwrap_or("text")));
+        }
+    }
+
     /// Drawn as selected: the table is inside the text view's selection.
     pub fn set_selected(&self, on: bool) {
         if self.root.has_css_class("selected") != on {
@@ -707,6 +760,9 @@ impl TableView {
         let ctrl = state.contains(gdk::ModifierType::CONTROL_MASK);
         let (rows, cols) = (self.rows(), self.cols());
         let back_tab = k == gdk::Key::ISO_Left_Tab || (k == gdk::Key::Tab && shift);
+        if let Some(handled) = self.selection_key(view, k, shift, ctrl, r, c) {
+            return handled;
+        }
         match k {
             gdk::Key::z | gdk::Key::Z | gdk::Key::y | gdk::Key::Y if ctrl => {
                 let redo = shift || matches!(k, gdk::Key::y | gdk::Key::Y);
@@ -824,6 +880,10 @@ impl TableView {
             let mut d = self.data.borrow_mut();
             let at = (c + 1).min(d.cols());
             let n = d.cols() + 1;
+            let mut manual = self.manual.borrow_mut();
+            if at <= manual.len() {
+                manual.insert(at, None);
+            }
             d.header.insert(at, crate::i18n::trf("Column {}", &[&n]));
             d.align.insert(at, Align::None);
             for row in d.rows.iter_mut() {
@@ -855,6 +915,10 @@ impl TableView {
             let mut d = self.data.borrow_mut();
             d.header.remove(c);
             d.align.remove(c);
+            let mut manual = self.manual.borrow_mut();
+            if c < manual.len() {
+                manual.remove(c);
+            }
             for row in d.rows.iter_mut() {
                 if c < row.len() {
                     row.remove(c);
@@ -865,4 +929,365 @@ impl TableView {
         self.changed();
         self.focus_cell(r, c.saturating_sub(1));
     }
+
+    // -----------------------------------------------------------------------
+    // Column widths, sideways scrolling
+    // -----------------------------------------------------------------------
+
+    /// CSV data keeps its columns' widths and scrolls; Markdown tables fit.
+    pub fn set_fit(&self, fit: bool) {
+        if self.fit.replace(fit) != fit {
+            self.layout();
+        }
+    }
+
+    /// Widths set by hand, 0 for automatic (for the session).
+    pub fn manual_widths(&self) -> Vec<i32> {
+        let m = self.manual.borrow();
+        if m.iter().all(Option::is_none) { Vec::new() } else { m.iter().map(|w| w.unwrap_or(0)).collect() }
+    }
+
+    pub fn set_manual_widths(&self, widths: &[i32]) {
+        *self.manual.borrow_mut() = widths.iter().map(|&w| (w > 0).then_some(w)).collect();
+        self.layout();
+    }
+
+    fn resized(&self) {
+        let cb = self.on_resize.borrow().clone();
+        if let Some(cb) = cb {
+            cb();
+        }
+    }
+
+    /// Right edges of the columns and bottom edges of the rows, in grid
+    /// coordinates.
+    fn edges(&self) -> (Vec<f64>, Vec<f64>) {
+        let cells = self.cells.borrow();
+        let right = |w: &gtk::TextView| w.compute_bounds(&self.grid).map(|b| (b.x() + b.width()) as f64);
+        let bottom = |w: &gtk::TextView| w.compute_bounds(&self.grid).map(|b| (b.y() + b.height()) as f64);
+        let cols = cells.first().map(|row| row.iter().filter_map(right).collect()).unwrap_or_default();
+        let rows = cells.iter().filter_map(|row| row.first().and_then(bottom)).collect();
+        (cols, rows)
+    }
+
+    fn cell_at(&self, x: f64, y: f64) -> Option<(usize, usize)> {
+        let (cols, rows) = self.edges();
+        if cols.is_empty() || rows.is_empty() {
+            return None;
+        }
+        let c = cols.partition_point(|&e| e <= x).min(cols.len() - 1);
+        let r = rows.partition_point(|&e| e <= y).min(rows.len() - 1);
+        Some((r, c))
+    }
+
+    /// The column whose right border is under x (a few pixels either side).
+    fn border_at(&self, x: f64) -> Option<usize> {
+        let (cols, _) = self.edges();
+        cols.iter().position(|&e| (x - e).abs() <= 4.0)
+    }
+
+    /// An event's position in grid coordinates.
+    fn grid_point(&self, ev: &gdk::Event) -> Option<(f64, f64)> {
+        let (ex, ey) = ev.position()?;
+        let native = self.grid.native()?;
+        let (sx, sy) = native.surface_transform();
+        let p = native.compute_point(&self.grid, &gtk::graphene::Point::new((ex - sx) as f32, (ey - sy) as f32))?;
+        Some((p.x() as f64, p.y() as f64))
+    }
+
+    fn connect_grid_gestures(self: &Rc<Self>) {
+        let motion = gtk::EventControllerMotion::new();
+        let weak = Rc::downgrade(self);
+        motion.connect_motion(move |_, x, _| {
+            let Some(t) = weak.upgrade() else { return };
+            if t.resizing.get().is_some() {
+                return;
+            }
+
+            let near = t.border_at(x).is_some();
+            if t.resize_cursor.replace(near) != near {
+                t.set_cursor(near.then_some("col-resize"));
+            }
+        });
+        let weak = Rc::downgrade(self);
+        motion.connect_leave(move |_| {
+            if let Some(t) = weak.upgrade()
+                && t.resize_cursor.replace(false)
+            {
+                t.set_cursor(None);
+            }
+        });
+        self.grid.add_controller(motion);
+
+        // A press in a cell dragged into another selects cells. The cell's
+        // text view takes the press (and the pointer with it), so gestures
+        // and motion controllers here see nothing more: raw events do.
+        let raw = gtk::EventControllerLegacy::new();
+        raw.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let weak = Rc::downgrade(self);
+        raw.connect_event(move |_, ev| {
+            let Some(t) = weak.upgrade() else { return glib::Propagation::Proceed };
+            let Some((x, y)) = t.grid_point(ev) else { return glib::Propagation::Proceed };
+            match ev.event_type() {
+                gdk::EventType::ButtonPress => {
+                    let primary = ev.downcast_ref::<gdk::ButtonEvent>().is_some_and(|b| b.button() == gdk::BUTTON_PRIMARY);
+                    let plain = !ev.modifier_state().contains(gdk::ModifierType::SHIFT_MASK);
+                    if primary && plain && t.border_at(x).is_none() {
+                        t.drag_from.set(t.cell_at(x, y).map(|c| (c, (x, y))));
+                    }
+                }
+                gdk::EventType::MotionNotify => {
+                    if let Some((start, _)) = t.drag_from.get() {
+                        if !ev.modifier_state().contains(gdk::ModifierType::BUTTON1_MASK) {
+                            t.drag_from.set(None);
+                        } else if let Some(cur) = t.cell_at(x, y)
+                            && (cur != start || t.sel.get().is_some())
+                        {
+                            t.set_cell_selection(Some((start, cur)));
+                            // Not a text selection any more.
+                            return glib::Propagation::Stop;
+                        }
+                    }
+                }
+                gdk::EventType::ButtonRelease => {
+                    let selecting = t.drag_from.take().is_some() && t.sel.get().is_some();
+                    if selecting {
+                        return glib::Propagation::Stop;
+                    }
+                }
+                _ => {}
+            }
+            glib::Propagation::Proceed
+        });
+        self.grid.add_controller(raw);
+
+        let drag = gtk::GestureDrag::new();
+        drag.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let weak = Rc::downgrade(self);
+        drag.connect_drag_begin(move |g, x, y| {
+            let Some(t) = weak.upgrade() else { return };
+            t.drag_from.set(None);
+            if let Some(c) = t.border_at(x) {
+                g.set_state(gtk::EventSequenceState::Claimed);
+                let w = t.widths.borrow().get(c).copied().unwrap_or(80);
+                t.resizing.set(Some((c, w)));
+                return;
+            }
+            let Some(cell) = t.cell_at(x, y) else { return };
+            let shift = g.current_event_state().contains(gdk::ModifierType::SHIFT_MASK);
+            if shift {
+                // Shift+click: from the cell being edited (or the selection's
+                // anchor) to this one.
+                let anchor = t.sel.get().map_or(t.focus.get(), |(a, _)| a);
+                g.set_state(gtk::EventSequenceState::Claimed);
+                t.set_cell_selection(Some((anchor, cell)));
+                return;
+            }
+            t.set_cell_selection(None);
+        });
+        let weak = Rc::downgrade(self);
+        drag.connect_drag_update(move |g, dx, dy| {
+            let Some(t) = weak.upgrade() else { return };
+            if let Some((c, w0)) = t.resizing.get() {
+                let min = (t.char_width.get() * 3.0) as i32 + CELL_PAD;
+                let w = (w0 + dx as i32).max(min);
+                {
+                    let mut m = t.manual.borrow_mut();
+                    m.resize(t.cols(), None);
+                    m[c] = Some(w);
+                }
+                t.layout();
+                t.resized();
+                return;
+            }
+            let _ = (g, dy);
+        });
+        let weak = Rc::downgrade(self);
+        drag.connect_drag_end(move |_, _, _| {
+            let Some(t) = weak.upgrade() else { return };
+            if t.resizing.take().is_some() {
+                t.resized();
+            }
+        });
+        self.grid.add_controller(drag);
+    }
+
+    // -----------------------------------------------------------------------
+    // Selecting cells
+    // -----------------------------------------------------------------------
+
+    fn sel_rect(&self) -> Option<(usize, usize, usize, usize)> {
+        let ((r0, c0), (r1, c1)) = self.sel.get()?;
+        Some((r0.min(r1), c0.min(c1), r0.max(r1), c0.max(c1)))
+    }
+
+    /// Selects a block of cells (None: none), drawn as selected; the text
+    /// selected inside a cell goes.
+    pub fn set_cell_selection(&self, sel: Option<((usize, usize), (usize, usize))>) {
+        let clamp = |(r, c): (usize, usize)| (r.min(self.rows().saturating_sub(1)), c.min(self.cols().saturating_sub(1)));
+        let sel = sel.map(|(a, b)| (clamp(a), clamp(b)));
+        self.sel.set(sel);
+        let cells = self.cells.borrow();
+        let mut picked = self.picked.borrow_mut();
+        for (r, c) in picked.drain(..) {
+            if let Some(cell) = cells.get(r).and_then(|row| row.get(c)) {
+                cell.remove_css_class("picked");
+            }
+        }
+        if let Some((r0, c0, r1, c1)) = self.sel_rect() {
+            for r in r0..=r1 {
+                for c in c0..=c1 {
+                    if let Some(cell) = cells.get(r).and_then(|row| row.get(c)) {
+                        cell.add_css_class("picked");
+                        let b = cell.buffer();
+                        if b.has_selection() {
+                            b.place_cursor(&b.iter_at_mark(&b.get_insert()));
+                        }
+                        picked.push((r, c));
+                    }
+                }
+            }
+        }
+    }
+
+    /// The selected cells as tab-separated text (rows on lines).
+    fn selection_tsv(&self) -> Option<String> {
+        let (r0, c0, r1, c1) = self.sel_rect()?;
+        let plain = |md: String| model::parse_inline(&md).into_iter().map(|s| s.text).collect::<String>();
+        Some((r0..=r1).map(|r| (c0..=c1).map(|c| plain(self.cell(r, c)).replace(['\t', '\n'], " ")).collect::<Vec<_>>().join("\t")).collect::<Vec<_>>().join("\n"))
+    }
+
+    fn clear_selected_cells(&self) {
+        let Some((r0, c0, r1, c1)) = self.sel_rect() else { return };
+        let cells = self.cells.borrow().clone();
+        for row in cells.iter().take(r1 + 1).skip(r0) {
+            for cell in row.iter().take(c1 + 1).skip(c0) {
+                cell.buffer().set_text("");
+            }
+        }
+    }
+
+    /// Text pasted from (r, c): tab-separated values fill the cells to the
+    /// right and below, adding rows when needed.
+    fn paste_block(self: &Rc<Self>, text: &str, r: usize, c: usize) {
+        let lines: Vec<Vec<String>> = text.trim_end_matches(['\n', '\r']).lines().map(|l| l.split('\t').map(literal).collect()).collect();
+        {
+            let mut d = self.data.borrow_mut();
+            let cols = d.cols();
+            for (i, values) in lines.iter().enumerate() {
+                let row = r + i;
+                if row > 0 {
+                    while d.rows.len() < row {
+                        d.rows.push(vec![String::new(); cols]);
+                    }
+                }
+                for (j, v) in values.iter().enumerate() {
+                    let col = c + j;
+                    if col >= cols {
+                        break;
+                    }
+                    if row == 0 {
+                        d.header[col] = v.clone();
+                    } else {
+                        d.rows[row - 1][col] = v.clone();
+                    }
+                }
+            }
+        }
+        self.rebuild();
+        self.changed();
+        let (h, w) = (lines.len().max(1) - 1, lines.iter().map(Vec::len).max().unwrap_or(1).max(1) - 1);
+        self.focus_cell(r, c);
+        self.set_cell_selection(Some(((r, c), (r + h, (c + w).min(self.cols() - 1)))));
+    }
+
+    /// Keys acting on a cell selection, or starting one (Shift+arrows).
+    /// None: not handled here.
+    fn selection_key(self: &Rc<Self>, view: &gtk::TextView, k: gdk::Key, shift: bool, ctrl: bool, r: usize, c: usize) -> Option<bool> {
+        let active = self.sel.get();
+        if ctrl && matches!(k, gdk::Key::v | gdk::Key::V) && !shift {
+            let (r, c) = self.sel_rect().map_or((r, c), |(r0, c0, _, _)| (r0, c0));
+            let weak = Rc::downgrade(self);
+            let view = view.downgrade();
+            let clipboard = view.upgrade()?.clipboard();
+            glib::spawn_future_local(async move {
+                let Ok(Some(text)) = clipboard.read_text_future().await else { return };
+                let (Some(t), Some(view)) = (weak.upgrade(), view.upgrade()) else { return };
+                if text.contains('\t') || text.trim_end_matches(['\n', '\r']).contains('\n') {
+                    t.paste_block(&text, r, c);
+                } else {
+                    t.set_cell_selection(None);
+                    let b = view.buffer();
+                    b.begin_user_action();
+                    b.delete_selection(true, true);
+                    b.insert_at_cursor(text.trim_end_matches(['\n', '\r']));
+                    b.end_user_action();
+                }
+            });
+            return Some(true);
+        }
+        let step = |(r, c): (usize, usize)| -> Option<(usize, usize)> {
+            match k {
+                gdk::Key::Up if r > 0 => Some((r - 1, c)),
+                gdk::Key::Down if r + 1 < self.rows() => Some((r + 1, c)),
+                gdk::Key::Left if c > 0 => Some((r, c - 1)),
+                gdk::Key::Right if c + 1 < self.cols() => Some((r, c + 1)),
+                gdk::Key::Up | gdk::Key::Down | gdk::Key::Left | gdk::Key::Right => Some((r, c)),
+                _ => None,
+            }
+        };
+        if shift && !ctrl && matches!(k, gdk::Key::Up | gdk::Key::Down | gdk::Key::Left | gdk::Key::Right) {
+            // Left and Right select text inside the cell until its edge.
+            let b = view.buffer();
+            let cur = b.iter_at_mark(&b.get_insert());
+            let at_edge = match k {
+                gdk::Key::Left => cur.is_start(),
+                gdk::Key::Right => cur.is_end(),
+                _ => true,
+            };
+            if active.is_none() && !at_edge {
+                return None;
+            }
+            let (anchor, end) = active.unwrap_or(((r, c), (r, c)));
+            let end = step(end).unwrap_or(end);
+            self.set_cell_selection(Some((anchor, end)));
+            return Some(true);
+        }
+        active?;
+        match k {
+            gdk::Key::c | gdk::Key::C | gdk::Key::x | gdk::Key::X if ctrl => {
+                if let Some(tsv) = self.selection_tsv() {
+                    view.clipboard().set_text(&tsv);
+                }
+                if matches!(k, gdk::Key::x | gdk::Key::X) {
+                    self.clear_selected_cells();
+                }
+                Some(true)
+            }
+            gdk::Key::Delete | gdk::Key::KP_Delete | gdk::Key::BackSpace => {
+                self.clear_selected_cells();
+                Some(true)
+            }
+            gdk::Key::Escape => {
+                self.set_cell_selection(None);
+                Some(true)
+            }
+            _ => {
+                // Moving or typing: back to a single cell. Modifiers alone
+                // and shortcuts leave the selection.
+                if !ctrl && (k.to_unicode().is_some() || step((r, c)).is_some() || matches!(k, gdk::Key::Tab | gdk::Key::Return)) {
+                    self.set_cell_selection(None);
+                }
+                None
+            }
+        }
+    }
+}
+
+/// Inline Markdown that shows `text` literally.
+fn literal(text: &str) -> String {
+    if text.is_empty() {
+        return String::new();
+    }
+    model::serialize_line(&Line { block: Block::Para, spans: vec![Span { text: text.to_string(), style: Style::default() }] })
 }

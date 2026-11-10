@@ -12,7 +12,10 @@ use crate::model::{self, Block, Line, Span, Style, Table};
 use crate::table::{CellColors, TableView};
 use crate::theme::Theme;
 
+mod autoscroll;
 mod folding;
+
+pub use autoscroll::set_middle_scroll;
 
 /// Longest list prefix (indent, marker, space) given a hanging indent.
 const MAX_HANG: i32 = 24;
@@ -113,6 +116,10 @@ pub struct Tab {
     fold_hover: Cell<Option<(i32, bool)>>,
     /// Folded regions, by a mark on their first line.
     fold_marks: RefCell<Vec<gtk::TextMark>>,
+    /// Middle-click fast scrolling under way.
+    auto: Cell<Option<autoscroll::AutoScroll>>,
+    /// The pointer cursor was set by the fold arrows.
+    fold_cursor: Cell<bool>,
     /// Line numbers drawn by Calepin: GtkSourceView's own would print the
     /// numbers of folded lines on top of each other.
     line_numbers: sourceview5::GutterRendererText,
@@ -274,6 +281,8 @@ impl Tab {
             fold_scan_pending: Cell::new(false),
             fold_hover: Cell::new(None),
             fold_marks: RefCell::new(Vec::new()),
+            auto: Cell::new(None),
+            fold_cursor: Cell::new(false),
             line_numbers: sourceview5::GutterRendererText::new(),
             map_colors: RefCell::new([gdk::RGBA::BLACK; 5]),
             hit_marks: RefCell::new(Vec::new()),
@@ -296,6 +305,11 @@ impl Tab {
         tab.apply_theme(theme, scheme);
         tab.connect_signals();
         tab.connect_folding();
+        tab.connect_autoscroll();
+        // Right-click menu: what the middle click does.
+        let menu = gio::Menu::new();
+        menu.append(Some(crate::i18n::tr("Middle click: fast scroll")), Some("win.middle-scroll"));
+        tab.view.set_extra_menu(Some(&menu));
         tab
     }
 
@@ -317,6 +331,10 @@ impl Tab {
                 }
             }
             return glib::Propagation::Stop;
+        }
+        if c.current_event_state().contains(gdk::ModifierType::SHIFT_MASK) {
+            // Shift+wheel scrolls a wide table sideways.
+            return glib::Propagation::Proceed;
         }
         if !wheel || dy == 0.0 {
             // Touchpads already scroll smoothly, with kinetic deceleration.
@@ -555,6 +573,18 @@ impl Tab {
                 t.pending_delete.set(Some(s.offset()));
             }
         });
+        // Focus coming back to the text with the caret on a table's line.
+        let focus = gtk::EventControllerFocus::new();
+        let weak = Rc::downgrade(self);
+        focus.connect_enter(move |_| {
+            let w = weak.clone();
+            glib::idle_add_local_once(move || {
+                if let Some(t) = w.upgrade() {
+                    t.keep_caret_off_tables();
+                }
+            });
+        });
+        self.view.add_controller(focus);
         let weak = Rc::downgrade(self);
         self.buffer.connect_mark_set(move |b, _, mark| {
             if let Some(t) = weak.upgrade()
@@ -2142,7 +2172,9 @@ impl Tab {
                 let delim = delim.unwrap_or_else(|| crate::csv::guess_delimiter(text));
                 match crate::csv::to_markdown(text, delim) {
                     Some(md) => {
-                        self.render_content(&md, true);
+                        // A line after the table, for the caret (empty
+                        // lines are not CSV rows).
+                        self.render_content(&format!("{md}\n"), true);
                         let (s, e) = self.buffer.bounds();
                         let baseline = crate::csv::rows_of(&self.model_range(s.offset(), e.offset()));
                         // The file's conventions (line ends, final newline)
@@ -2151,6 +2183,9 @@ impl Tab {
                         let format = crate::csv::format_of(file.as_deref().unwrap_or(text), delim);
                         let disk = file.filter(|d| d != text).and_then(|d| crate::csv::shown_rows(&d, delim).map(|r| (r, d)));
                         *self.csv.borrow_mut() = Some(crate::csv::Sheet { format, baseline, text: text.to_string(), disk });
+                        for slot in self.tables.borrow().iter() {
+                            slot.view.set_fit(false);
+                        }
                     }
                     None => self.render_content(text, false),
                 }
@@ -2246,6 +2281,13 @@ impl Tab {
         self.show_line_numbers(!markdown && self.buffer.language().is_some_and(|l| l.id() != "markdown"));
         self.view.set_highlight_current_line(!markdown);
         self.buffer.place_cursor(&self.buffer.start_iter());
+        // Not on a table's line: the caret would be as tall as the table
+        // (and as wide, GTK's caret width follows its height).
+        if self.line_anchor(0).is_some()
+            && let Some(next) = self.buffer.iter_at_line(1)
+        {
+            self.buffer.place_cursor(&next);
+        }
         self.update_margin();
     }
 
@@ -2708,6 +2750,12 @@ impl Tab {
         let cur = self.cursor();
         let line = cur.line();
         let last = self.caret_line.replace(line);
+        // On a table's line GTK draws the caret as tall as the table (and
+        // its width follows): showing behind the table's edges as a block.
+        let on_table = self.line_anchor(line).is_some();
+        if self.view.is_cursor_visible() == on_table {
+            self.view.set_cursor_visible(!on_table);
+        }
         if self.busy.get() > 0 || self.buffer.has_selection() || self.tables.borrow().is_empty() {
             return;
         }
@@ -2770,11 +2818,12 @@ impl Tab {
             let (_, w, _, _) = root.measure(gtk::Orientation::Horizontal, -1);
             let w = w.min(slot.view.max_width());
             let (_, h, _, _) = root.measure(gtk::Orientation::Vertical, w);
-            // The placeholder never widens the text view: a wide table
-            // overflows the column in the overlay only.
-            let pw = w.min(normal);
-            if slot.placeholder.width_request() != pw || slot.placeholder.height_request() != h {
-                slot.placeholder.set_size_request(pw, h);
+            // The placeholder only reserves the height: the table is drawn
+            // above it. A width would count in the text view's minimum width
+            // (with the margins worked out from the width it then gets, the
+            // window could never shrink back).
+            if slot.placeholder.height_request() != h {
+                slot.placeholder.set_size_request(1, h);
                 changed = true;
             }
             slot.width.set(w);
@@ -2820,7 +2869,7 @@ impl Tab {
             return Some(gdk::Rectangle::new(0, -100_000, w, h));
         };
         let mut x = p.x().round() as i32;
-        if w > slot.placeholder.width_request() {
+        if w > self.table_space().0 {
             // Wider than the column: centre it in the view.
             x = ((self.overlay.width() - w) / 2).max(16).min(x);
         }
@@ -2837,6 +2886,36 @@ impl Tab {
             .collect();
         v.sort();
         v.iter().enumerate().filter(|(_, (_, w))| *w).map(|(i, _)| i).collect()
+    }
+
+    /// Column widths set by hand, per table in document order.
+    pub fn table_widths(&self) -> Vec<Vec<i32>> {
+        let mut v: Vec<(i32, Vec<i32>)> = self
+            .tables
+            .borrow()
+            .iter()
+            .map(|s| (self.buffer.iter_at_child_anchor(&s.anchor).offset(), s.view.manual_widths()))
+            .collect();
+        v.sort_by_key(|(o, _)| *o);
+        let widths: Vec<Vec<i32>> = v.into_iter().map(|(_, w)| w).collect();
+        if widths.iter().all(Vec::is_empty) { Vec::new() } else { widths }
+    }
+
+    pub fn set_table_widths(&self, widths: &[Vec<i32>]) {
+        if widths.is_empty() {
+            return;
+        }
+        let mut v: Vec<(i32, Rc<TableView>)> = self
+            .tables
+            .borrow()
+            .iter()
+            .map(|s| (self.buffer.iter_at_child_anchor(&s.anchor).offset(), s.view.clone()))
+            .collect();
+        v.sort_by_key(|(o, _)| *o);
+        for ((_, tv), w) in v.iter().zip(widths) {
+            tv.set_manual_widths(w);
+        }
+        self.schedule_table_sync();
     }
 
     pub fn set_wide_tables(&self, wide: &[usize]) {
@@ -2874,6 +2953,10 @@ impl Tab {
     fn insert_table_at(&self, it: &mut gtk::TextIter, table: Table) -> Rc<TableView> {
         let anchor = self.buffer.create_child_anchor(it);
         let tv = TableView::new(table);
+        // CSV data keeps its columns' widths and scrolls sideways.
+        if self.csv.borrow().is_some() {
+            tv.set_fit(false);
+        }
         if let Some(c) = self.cell_colors.get() {
             tv.set_colors(c);
         }
@@ -2958,11 +3041,26 @@ impl Tab {
         self.overlay.set_clip_overlay(&tv.root, true);
         // Touchpad scrolling over a table moves the page (the mouse wheel is
         // handled by the overlay, smoothly).
-        let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+        // Over a table: the wheel scrolls the text, Shift+wheel (or a
+        // sideways swipe) scrolls a wide table sideways.
+        let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::BOTH_AXES);
         scroll.set_propagation_phase(gtk::PropagationPhase::Capture);
         let adj = self.scrolled.vadjustment();
-        scroll.connect_scroll(move |_, _, dy| {
-            adj.set_value(adj.value() + dy);
+        let hadj = tv.scroller.hadjustment();
+        scroll.connect_scroll(move |c, dx, dy| {
+            let wheel = c.unit() == gdk::ScrollUnit::Wheel;
+            let shift = c.current_event_state().contains(gdk::ModifierType::SHIFT_MASK);
+            let (sx, sy) = if shift { (dx + dy, 0.0) } else { (dx, dy) };
+            if sx != 0.0 {
+                let step = if wheel { hadj.page_size().powf(2.0 / 3.0) } else { 1.0 };
+                let max = (hadj.upper() - hadj.page_size()).max(hadj.lower());
+                hadj.set_value((hadj.value() + sx * step).clamp(hadj.lower(), max));
+            }
+            if sy != 0.0 {
+                let step = if wheel { adj.page_size().powf(2.0 / 3.0) } else { 1.0 };
+                let max = (adj.upper() - adj.page_size()).max(adj.lower());
+                adj.set_value((adj.value() + sy * step).clamp(adj.lower(), max));
+            }
             glib::Propagation::Stop
         });
         tv.root.add_controller(scroll);
@@ -3363,12 +3461,14 @@ impl Tab {
         let adj = self.scrolled.vadjustment();
         let scroll = adj.value();
         let wide = self.wide_tables();
+        let widths = self.table_widths();
         let (s, e) = self.buffer.bounds();
         let old: Vec<char> = self.buffer.text(&s, &e, true).chars().collect();
         let old_cursor = self.cursor_offset();
         let folds = self.folded_lines();
         self.render_content(&md, true);
         self.set_wide_tables(&wide);
+        self.set_table_widths(&widths);
         self.refold(&folds);
         self.hist_pos.set(i);
         self.hist_dirty.set(true);

@@ -77,6 +77,7 @@ impl Tab {
         self.fold_area.set_draw_func(move |_, cr, _, _| {
             if let Some(t) = me.upgrade() {
                 t.draw_folds(cr);
+                t.draw_autoscroll(cr);
             }
         });
         let area = self.fold_area.clone();
@@ -109,8 +110,16 @@ impl Tab {
             if t.fold_hover.replace(hover) != hover {
                 t.fold_area.queue_draw();
             }
-            if t.fold_target_at(x, y).is_some() {
-                t.view.set_cursor_from_name(Some("pointer"));
+            // The hand over an arrow or a "⋯" only, the text cursor again
+            // after (other code sets it over checkboxes and links).
+            if t.auto.get().is_none() {
+                let over = t.fold_target_at(x, y).is_some();
+                if over {
+                    t.view.set_cursor_from_name(Some("pointer"));
+                } else if t.fold_cursor.get() {
+                    t.view.set_cursor_from_name(Some("text"));
+                }
+                t.fold_cursor.set(over);
             }
         });
         let me = Rc::downgrade(self);
