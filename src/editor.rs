@@ -118,6 +118,10 @@ pub struct Tab {
     fold_marks: RefCell<Vec<gtk::TextMark>>,
     /// Middle-click fast scrolling under way.
     auto: Cell<Option<autoscroll::AutoScroll>>,
+    /// The table scrolled sideways by the middle click, if any.
+    auto_table: RefCell<Option<Rc<TableView>>>,
+    /// While it runs: the window, its press watcher, its focus handler.
+    auto_window: RefCell<Option<(gtk::Window, gtk::EventController, glib::SignalHandlerId)>>,
     /// The pointer cursor was set by the fold arrows.
     fold_cursor: Cell<bool>,
     /// Line numbers drawn by Calepin: GtkSourceView's own would print the
@@ -282,6 +286,8 @@ impl Tab {
             fold_hover: Cell::new(None),
             fold_marks: RefCell::new(Vec::new()),
             auto: Cell::new(None),
+            auto_table: RefCell::new(None),
+            auto_window: RefCell::new(None),
             fold_cursor: Cell::new(false),
             line_numbers: sourceview5::GutterRendererText::new(),
             map_colors: RefCell::new([gdk::RGBA::BLACK; 5]),
@@ -3038,6 +3044,12 @@ impl Tab {
         tv.set_available(normal, wide);
         tv.root.set_visible(false);
         self.overlay.add_overlay(&tv.root);
+        // The fold arrows and the middle-click anchor stay above the tables
+        // (that layer takes no input).
+        if self.fold_area.parent().is_some() {
+            self.overlay.remove_overlay(&self.fold_area);
+            self.overlay.add_overlay(&self.fold_area);
+        }
         self.overlay.set_clip_overlay(&tv.root, true);
         // Touchpad scrolling over a table moves the page (the mouse wheel is
         // handled by the overlay, smoothly).

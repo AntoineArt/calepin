@@ -69,7 +69,8 @@ tag; the `release.yml` workflow builds the binary and creates the release.
   `calepin --background` loads everything without showing a window (for
   session autostart), `calepin --version` prints the version.
 - Middle click: fast scrolling (move away from where you clicked, click
-  again or Escape to stop; or hold the button). Right-click → "Middle click:
+  anywhere or Escape to stop; or hold the button). Over a table wider than
+  its room, moving sideways scrolls the table sideways. Right-click → "Middle click:
   fast scroll" turns it off, and the middle click pastes again.
 - Closing the window only hides it: the process stays resident so it shows up
   instantly next time. Ctrl+Q really quits.

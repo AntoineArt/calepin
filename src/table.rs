@@ -986,6 +986,19 @@ impl TableView {
         cols.iter().position(|&e| (x - e).abs() <= 4.0)
     }
 
+    /// Ends the gestures under way in a cell's text view (its drag
+    /// selecting text), without touching the pointer events themselves.
+    fn end_cell_gestures(&self, (r, c): (usize, usize)) {
+        let cells = self.cells.borrow();
+        let Some(cell) = cells.get(r).and_then(|row| row.get(c)) else { return };
+        let controllers = cell.observe_controllers();
+        for i in 0..controllers.n_items() {
+            if let Some(g) = controllers.item(i).and_downcast::<gtk::Gesture>() {
+                g.reset();
+            }
+        }
+    }
+
     /// An event's position in grid coordinates.
     fn grid_point(&self, ev: &gdk::Event) -> Option<(f64, f64)> {
         let (ex, ey) = ev.position()?;
@@ -1021,7 +1034,9 @@ impl TableView {
 
         // A press in a cell dragged into another selects cells. The cell's
         // text view takes the press (and the pointer with it), so gestures
-        // and motion controllers here see nothing more: raw events do.
+        // and motion controllers here see nothing more: raw events do. They
+        // are only watched, never stopped: a release kept from the text view
+        // would leave it holding the pointer (no click anywhere else).
         let raw = gtk::EventControllerLegacy::new();
         raw.set_propagation_phase(gtk::PropagationPhase::Capture);
         let weak = Rc::downgrade(self);
@@ -1043,17 +1058,18 @@ impl TableView {
                         } else if let Some(cur) = t.cell_at(x, y)
                             && (cur != start || t.sel.get().is_some())
                         {
+                            if t.sel.get().is_none() {
+                                // Cells now, not text: the start cell's text view
+                                // stops selecting (its gestures end here; the
+                                // release still reaches it).
+                                t.end_cell_gestures(start);
+                            }
                             t.set_cell_selection(Some((start, cur)));
-                            // Not a text selection any more.
-                            return glib::Propagation::Stop;
                         }
                     }
                 }
                 gdk::EventType::ButtonRelease => {
-                    let selecting = t.drag_from.take().is_some() && t.sel.get().is_some();
-                    if selecting {
-                        return glib::Propagation::Stop;
-                    }
+                    t.drag_from.set(None);
                 }
                 _ => {}
             }
@@ -1066,7 +1082,6 @@ impl TableView {
         let weak = Rc::downgrade(self);
         drag.connect_drag_begin(move |g, x, y| {
             let Some(t) = weak.upgrade() else { return };
-            t.drag_from.set(None);
             if let Some(c) = t.border_at(x) {
                 g.set_state(gtk::EventSequenceState::Claimed);
                 let w = t.widths.borrow().get(c).copied().unwrap_or(80);

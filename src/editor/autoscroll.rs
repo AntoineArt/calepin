@@ -1,5 +1,6 @@
 //! Middle-click fast scrolling: a middle click sets an anchor and the text
-//! scrolls, faster the further the pointer moves from it. A click (or
+//! scrolls, faster the further the pointer moves from it; over a table
+//! wider than its room, moving sideways scrolls the table sideways. A click (or
 //! Escape) stops it; holding the button while moving stops on release.
 //! Off, the middle click pastes the primary selection, as GTK does.
 
@@ -29,6 +30,15 @@ pub(super) struct AutoScroll {
     dragged: bool,
     held: bool,
     clock: i64,
+    /// Over a table that scrolls sideways.
+    sideways: bool,
+}
+
+/// Pixels per second for a distance from the anchor: gentle near it, fast
+/// far away.
+fn speed(d: f64) -> f64 {
+    let over = (d.abs() - DEAD_ZONE).max(0.0);
+    d.signum() * (over * 6.0 + over * over * 0.02)
 }
 
 impl Tab {
@@ -104,12 +114,55 @@ impl Tab {
             glib::Propagation::Proceed
         });
         self.overlay.add_controller(key);
+
+        // Leaving the tab (another tab shown) stops it.
+        let me = Rc::downgrade(self);
+        self.overlay.connect_unmap(move |_| {
+            if let Some(t) = me.upgrade() {
+                t.stop_autoscroll();
+            }
+        });
     }
 
     fn start_autoscroll(&self, x: f64, y: f64) {
         self.scroll_target.set(None);
         let clock = self.overlay.frame_clock().map_or(0, |c| c.frame_time());
-        self.auto.set(Some(AutoScroll { anchor: (x, y), pointer: (x, y), dragged: false, held: true, clock }));
+        // The table under the anchor, if it is wider than its room.
+        let table = self.tables.borrow().iter().find_map(|slot| {
+            let b = slot.view.root.compute_bounds(&self.overlay)?;
+            let inside = b.contains_point(&gtk::graphene::Point::new(x as f32, y as f32));
+            let h = slot.view.scroller.hadjustment();
+            (inside && h.upper() > h.page_size() + 1.0).then(|| slot.view.clone())
+        });
+        let sideways = table.is_some();
+        *self.auto_table.borrow_mut() = table;
+        // A press anywhere in the window (tabs, toolbar) stops it, and so
+        // does the window losing the focus: it never runs on unseen.
+        if let Some(win) = self.view.root().and_downcast::<gtk::Window>() {
+            let press = gtk::GestureClick::new();
+            press.set_button(0);
+            press.set_propagation_phase(gtk::PropagationPhase::Capture);
+            let me = self.me.borrow().clone();
+            press.connect_pressed(move |g, _, _, _| {
+                if let Some(t) = me.upgrade()
+                    && t.auto.get().is_some()
+                    && g.current_button() != gdk::BUTTON_MIDDLE
+                {
+                    t.stop_autoscroll();
+                }
+            });
+            win.add_controller(press.clone());
+            let me = self.me.borrow().clone();
+            let active = win.connect_is_active_notify(move |w| {
+                if !w.is_active()
+                    && let Some(t) = me.upgrade()
+                {
+                    t.stop_autoscroll();
+                }
+            });
+            *self.auto_window.borrow_mut() = Some((win, press.upcast(), active));
+        }
+        self.auto.set(Some(AutoScroll { anchor: (x, y), pointer: (x, y), dragged: false, held: true, clock, sideways }));
         self.set_auto_cursor(Some("all-scroll"));
         self.fold_area.queue_draw();
         let me = self.me.borrow().clone();
@@ -120,20 +173,28 @@ impl Tab {
             let dt = ((now - a.clock) as f64 / 1_000_000.0).clamp(0.0, 0.1);
             a.clock = now;
             t.auto.set(Some(a));
-            let d = a.pointer.1 - a.anchor.1;
-            let over = (d.abs() - DEAD_ZONE).max(0.0);
-            // Pixels per second: gentle near the anchor, fast far away.
-            let speed = d.signum() * (over * 6.0 + over * over * 0.02);
-            if speed != 0.0 {
-                let adj = t.scrolled.vadjustment();
-                let max = (adj.upper() - adj.page_size()).max(adj.lower());
-                adj.set_value((adj.value() + speed * dt).clamp(adj.lower(), max));
+            let scroll = |adj: &gtk::Adjustment, v: f64| {
+                if v != 0.0 {
+                    let max = (adj.upper() - adj.page_size()).max(adj.lower());
+                    adj.set_value((adj.value() + v * dt).clamp(adj.lower(), max));
+                }
+            };
+            scroll(&t.scrolled.vadjustment(), speed(a.pointer.1 - a.anchor.1));
+            if let Some(table) = t.auto_table.borrow().as_ref() {
+                scroll(&table.scroller.hadjustment(), speed(a.pointer.0 - a.anchor.0));
             }
             glib::ControlFlow::Continue
         });
     }
 
     pub(super) fn stop_autoscroll(&self) {
+        self.auto_table.borrow_mut().take();
+        if let Some((win, press, active)) = self.auto_window.borrow_mut().take() {
+            win.disconnect(active);
+            // Not while the press that stops it is being handled: removing
+            // the controller then would cancel that press for its target.
+            glib::idle_add_local_once(move || win.remove_controller(&press));
+        }
         if self.auto.take().is_some() {
             self.set_auto_cursor(None);
             self.fold_area.queue_draw();
@@ -168,6 +229,13 @@ impl Tab {
             cr.line_to(x + 4.5, y + dir * 4.0);
             cr.close_path();
             let _ = cr.fill();
+            if a.sideways {
+                cr.move_to(x + dir * 4.0, y - 4.5);
+                cr.line_to(x + dir * 9.0, y);
+                cr.line_to(x + dir * 4.0, y + 4.5);
+                cr.close_path();
+                let _ = cr.fill();
+            }
         }
     }
 }
