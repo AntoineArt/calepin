@@ -43,28 +43,51 @@ fn speed(d: f64) -> f64 {
 
 impl Tab {
     pub(super) fn connect_autoscroll(self: &Rc<Self>) {
-        // Middle button: start (or stop), before the text views paste.
-        let middle = gtk::GestureClick::new();
+        // Middle button: start (or stop), before the text views paste. A
+        // drag gesture, not a click one: while the button is held the window
+        // keeps the pointer, motion controllers see nothing, and only the
+        // gesture holding the press follows the pointer.
+        let middle = gtk::GestureDrag::new();
         middle.set_button(gdk::BUTTON_MIDDLE);
         middle.set_propagation_phase(gtk::PropagationPhase::Capture);
         let me = Rc::downgrade(self);
-        middle.connect_pressed(move |g, _, x, y| {
+        middle.connect_drag_begin(move |g, x, y| {
             let Some(t) = me.upgrade() else { return };
             if t.auto.get().is_some() {
+                // A second middle click ends sticky scrolling.
                 g.set_state(gtk::EventSequenceState::Claimed);
                 t.stop_autoscroll();
+                t.auto_stopping.set(true);
             } else if middle_scroll() {
                 g.set_state(gtk::EventSequenceState::Claimed);
                 t.start_autoscroll(x, y);
             }
         });
         let me = Rc::downgrade(self);
-        middle.connect_released(move |_, _, _, _| {
+        middle.connect_drag_update(move |_, dx, dy| {
             let Some(t) = me.upgrade() else { return };
+            if let Some(mut a) = t.auto.get()
+                && a.held
+            {
+                a.pointer = (a.anchor.0 + dx, a.anchor.1 + dy);
+                if dx.abs() > DEAD_ZONE || dy.abs() > DEAD_ZONE {
+                    a.dragged = true;
+                }
+                t.auto.set(Some(a));
+            }
+        });
+        let me = Rc::downgrade(self);
+        middle.connect_drag_end(move |_, _, _| {
+            let Some(t) = me.upgrade() else { return };
+            if t.auto_stopping.replace(false) {
+                return;
+            }
             if let Some(mut a) = t.auto.get() {
                 if a.dragged {
+                    // Held and moved: releasing stops.
                     t.stop_autoscroll();
                 } else {
+                    // A click: scrolling goes on, following the pointer.
                     a.held = false;
                     t.auto.set(Some(a));
                 }
@@ -90,11 +113,10 @@ impl Tab {
         let me = Rc::downgrade(self);
         motion.connect_motion(move |_, x, y| {
             let Some(t) = me.upgrade() else { return };
-            if let Some(mut a) = t.auto.get() {
+            if let Some(mut a) = t.auto.get()
+                && !a.held
+            {
                 a.pointer = (x, y);
-                if a.held && ((x - a.anchor.0).abs() > DEAD_ZONE || (y - a.anchor.1).abs() > DEAD_ZONE) {
-                    a.dragged = true;
-                }
                 t.auto.set(Some(a));
             }
         });

@@ -120,6 +120,8 @@ pub struct Tab {
     auto: Cell<Option<autoscroll::AutoScroll>>,
     /// The table scrolled sideways by the middle click, if any.
     auto_table: RefCell<Option<Rc<TableView>>>,
+    /// The middle press that ended sticky scrolling: its release does nothing.
+    auto_stopping: Cell<bool>,
     /// While it runs: the window, its press watcher, its focus handler.
     auto_window: RefCell<Option<(gtk::Window, gtk::EventController, glib::SignalHandlerId)>>,
     /// The pointer cursor was set by the fold arrows.
@@ -287,6 +289,7 @@ impl Tab {
             fold_marks: RefCell::new(Vec::new()),
             auto: Cell::new(None),
             auto_table: RefCell::new(None),
+            auto_stopping: Cell::new(false),
             auto_window: RefCell::new(None),
             fold_cursor: Cell::new(false),
             line_numbers: sourceview5::GutterRendererText::new(),
