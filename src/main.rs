@@ -1,6 +1,7 @@
 mod csv;
 mod editor;
 mod find;
+mod fold;
 mod i18n;
 mod model;
 mod session;

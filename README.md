@@ -78,6 +78,13 @@ tag; the `release.yml` workflow builds the binary and creates the release.
   Closing an unsaved note asks for confirmation.
 - `.md` files open in rich mode, any other file as plain text with syntax
   highlighting. A binary or non-UTF-8 file opens read-only.
+- Folding: Markdown sections (a heading and what follows, up to the next
+  heading of the same level), JSON objects and arrays, YAML blocks. Click the
+  arrow left of the line (shown on hover) or the "⋯" after a folded line;
+  Ctrl+Alt+← / → (or Ctrl+Shift+[ / ]) folds or unfolds at the caret,
+  Ctrl+Alt+Shift+← / → everything. Folded text stays in the file, is copied
+  and searched; a search hit or an edit inside unfolds it. Folds are kept
+  with the tab across restarts.
 - `.csv` and `.tsv` files open as an editable table (the first row is the
   header; the separator, `,` `;` tab or `|`, is detected) and are saved back
   as CSV, with their separator and line endings. A file left untouched is
@@ -138,6 +145,8 @@ a restart.
 | Open, save, save as | Ctrl+O, Ctrl+S, Ctrl+Shift+S |
 | Find (ignores case and accents) | Ctrl+F, Enter / Shift+Enter, F3, Escape |
 | Minimap, toolbar, Markdown source | Ctrl+M, Ctrl+Shift+F, Ctrl+Shift+E |
+| Fold, unfold (at the caret) | Ctrl+Alt+←, Ctrl+Alt+→ (or Ctrl+Shift+[, ]) |
+| Fold all, unfold all | Ctrl+Alt+Shift+←, Ctrl+Alt+Shift+→ |
 | Zoom (remembered) | Ctrl+scroll, Ctrl++, Ctrl+-, Ctrl+0 |
 | Quit | Ctrl+Q |
 

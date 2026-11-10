@@ -736,6 +736,7 @@ impl Window {
             dirty: self.is_dirty(tab),
             cursor: tab.cursor_offset(),
             wide_tables: tab.wide_tables(),
+            folds: tab.folded_lines(),
         }
     }
 
@@ -946,6 +947,7 @@ impl Window {
             tab.set_disk(d);
         }
         tab.set_wide_tables(&state.wide_tables);
+        tab.refold(&state.folds);
         tab.restore_cursor(state.cursor);
         // Undo goes on where it was before the restart.
         if let Some((steps, pos)) = session::load_history(&state.id) {
@@ -1074,8 +1076,10 @@ impl Window {
                 tab.set_disk(disk);
             } else {
                 let cur = tab.cursor_offset();
+                let folds = tab.folded_lines();
                 tab.set_content(&disk, tab.markdown.get());
                 tab.set_disk(disk);
+                tab.refold(&folds);
                 tab.restore_cursor(cur);
             }
             w.refresh_headers();
@@ -1488,6 +1492,12 @@ impl Window {
         }
     }
 
+    fn with_tab(&self, f: impl FnOnce(&Tab)) {
+        if let Some(t) = self.active_tab() {
+            f(&t);
+        }
+    }
+
     fn toggle_source(&self) {
         if let Some(t) = self.active_tab() {
             if t.path.borrow().as_ref().is_some_and(|p| !is_rich_path(p)) && !t.markdown.get() {
@@ -1798,6 +1808,11 @@ impl Window {
         add(&["<Control>m"], Rc::new(|w| w.toggle_minimap()));
         add(&["<Control><Shift>f"], Rc::new(|w| w.toggle_toolbar()));
         add(&["<Control><Shift>e"], Rc::new(|w| w.toggle_source()));
+        // Folding: Ctrl+Alt+arrows work on every keyboard layout.
+        add(&["<Control><Alt>Left", "<Control><Shift>bracketleft"], Rc::new(|w| w.with_tab(|t| t.fold_at_cursor())));
+        add(&["<Control><Alt>Right", "<Control><Shift>bracketright"], Rc::new(|w| w.with_tab(|t| t.unfold_at_cursor())));
+        add(&["<Control><Alt><Shift>Left"], Rc::new(|w| w.with_tab(|t| t.fold_all())));
+        add(&["<Control><Alt><Shift>Right"], Rc::new(|w| w.with_tab(|t| t.unfold_all())));
         add(&["<Control>plus", "<Control>equal", "<Control>KP_Add"], Rc::new(|w| w.zoom(1.0)));
         add(&["<Control>minus", "<Control>KP_Subtract"], Rc::new(|w| w.zoom(-1.0)));
         add(&["<Control>0", "<Control>KP_0"], Rc::new(|w| w.zoom(0.0)));

@@ -21,6 +21,9 @@ pub struct TabState {
     /// Tables shown wide, by order in the document.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub wide_tables: Vec<usize>,
+    /// First lines of the folded regions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub folds: Vec<i32>,
 }
 
 fn yes() -> bool {

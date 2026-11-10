@@ -12,6 +12,8 @@ use crate::model::{self, Block, Line, Span, Style, Table};
 use crate::table::{CellColors, TableView};
 use crate::theme::Theme;
 
+mod folding;
+
 /// Longest list prefix (indent, marker, space) given a hanging indent.
 const MAX_HANG: i32 = 24;
 const INLINE: [&str; 4] = ["b", "i", "s", "code"];
@@ -103,6 +105,17 @@ pub struct Tab {
     rich_history: RefCell<Option<(Vec<(String, i32)>, usize)>>,
     /// The history changed since it was last saved.
     pub hist_dirty: Cell<bool>,
+    /// Folding: the regions, the layer drawing arrows, the line hovered
+    /// (and whether in the left margin).
+    fold_regions: RefCell<Vec<crate::fold::Region>>,
+    fold_area: gtk::DrawingArea,
+    fold_scan_pending: Cell<bool>,
+    fold_hover: Cell<Option<(i32, bool)>>,
+    /// Folded regions, by a mark on their first line.
+    fold_marks: RefCell<Vec<gtk::TextMark>>,
+    /// Line numbers drawn by Calepin: GtkSourceView's own would print the
+    /// numbers of folded lines on top of each other.
+    line_numbers: sourceview5::GutterRendererText,
     map_colors: RefCell<[gdk::RGBA; 5]>,
     /// Search hits as y positions in the text, for the minimap.
     hit_marks: RefCell<Vec<(f64, bool)>>,
@@ -148,6 +161,10 @@ fn create_tags(buffer: &sourceview5::Buffer) {
     }
     for m in MARKERS {
         buffer.create_tag(Some(&format!("mk:{m}")), &[]);
+    }
+    // Folded lines: hidden, still in the text.
+    if let Some(t) = buffer.create_tag(Some("fold"), &[]) {
+        t.set_invisible(true);
     }
     // Search hits, above every other style.
     buffer.create_tag(Some("find"), &[]);
@@ -252,6 +269,12 @@ impl Tab {
             rendering: Cell::new(false),
             rich_history: RefCell::new(None),
             hist_dirty: Cell::new(false),
+            fold_regions: RefCell::new(Vec::new()),
+            fold_area: gtk::DrawingArea::new(),
+            fold_scan_pending: Cell::new(false),
+            fold_hover: Cell::new(None),
+            fold_marks: RefCell::new(Vec::new()),
+            line_numbers: sourceview5::GutterRendererText::new(),
             map_colors: RefCell::new([gdk::RGBA::BLACK; 5]),
             hit_marks: RefCell::new(Vec::new()),
             find_colors: RefCell::new([gdk::RGBA::BLACK; 3]),
@@ -272,6 +295,7 @@ impl Tab {
         *tab.me.borrow_mut() = Rc::downgrade(&tab);
         tab.apply_theme(theme, scheme);
         tab.connect_signals();
+        tab.connect_folding();
         tab
     }
 
@@ -438,6 +462,7 @@ impl Tab {
             theme.rgba("background"),
         ];
         self.map.queue_draw();
+        self.fold_area.queue_draw();
         let m = self.margin.get();
         self.margin.set(-1);
         self.set_margin(m.max(0));
@@ -467,6 +492,8 @@ impl Tab {
         let width = self.scrolled.width();
         let m = if self.markdown.get() {
             ((width - 780) / 2).max(34)
+        } else if self.fold_mode().is_some() {
+            30 // Room for the fold arrows.
         } else {
             12
         };
@@ -546,6 +573,7 @@ impl Tab {
             glib::idle_add_local_once(move || {
                 if let Some(t) = w.upgrade() {
                     t.caret_check.set(false);
+                    t.keep_caret_out_of_folds();
                     t.keep_caret_off_tables();
                     t.keep_caret_off_markers();
                 }
@@ -572,6 +600,23 @@ impl Tab {
         self.buffer.connect_changed(move |_| {
             if let Some(t) = weak.upgrade() {
                 t.notify();
+                t.schedule_fold_scan();
+            }
+        });
+        let weak = Rc::downgrade(self);
+        self.buffer.connect_delete_range(move |_, s, _| {
+            if let Some(t) = weak.upgrade()
+                && t.busy.get() == 0
+                && !t.rendering.get()
+                && !t.restoring.get()
+            {
+                let off = s.offset();
+                let w = Rc::downgrade(&t);
+                glib::idle_add_local_once(move || {
+                    if let Some(t) = w.upgrade() {
+                        t.unfold_near(off);
+                    }
+                });
             }
         });
         for sig in ["undo", "redo"] {
@@ -637,6 +682,12 @@ impl Tab {
             if std::env::var_os("MW_DEBUG").is_some() {
                 let f = t.view.root().and_then(|r| r.focus());
                 eprintln!("key {keyval:?} focus={:?}", f.map(|w| w.type_().name()));
+            }
+            if matches!(keyval, gdk::Key::Return | gdk::Key::KP_Enter)
+                && (state & (gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::SHIFT_MASK | gdk::ModifierType::ALT_MASK)).is_empty()
+                && t.fold_enter()
+            {
+                return glib::Propagation::Stop;
             }
             if !t.markdown.get() {
                 return glib::Propagation::Proceed;
@@ -708,20 +759,22 @@ impl Tab {
         // Clipboard speaks Markdown.
         let weak = Rc::downgrade(self);
         self.view.connect_copy_clipboard(move |v| {
-            if let Some(t) = weak.upgrade()
-                && t.markdown.get()
-            {
+            let Some(t) = weak.upgrade() else { return };
+            if t.markdown.get() {
                 v.stop_signal_emission_by_name("copy-clipboard");
                 t.copy_markdown(false);
+            } else if t.copy_with_folds(false) {
+                v.stop_signal_emission_by_name("copy-clipboard");
             }
         });
         let weak = Rc::downgrade(self);
         self.view.connect_cut_clipboard(move |v| {
-            if let Some(t) = weak.upgrade()
-                && t.markdown.get()
-            {
+            let Some(t) = weak.upgrade() else { return };
+            if t.markdown.get() {
                 v.stop_signal_emission_by_name("cut-clipboard");
                 t.copy_markdown(true);
+            } else if t.copy_with_folds(true) {
+                v.stop_signal_emission_by_name("cut-clipboard");
             }
         });
         let weak = Rc::downgrade(self);
@@ -2161,6 +2214,12 @@ impl Tab {
         }
         self.graveyard.borrow_mut().clear();
         *self.overrides.borrow_mut() = None;
+        // Folds are put back by the caller (`refold`) where they apply.
+        for m in self.fold_marks.borrow_mut().drain(..) {
+            if !m.is_deleted() {
+                self.buffer.delete_mark(&m);
+            }
+        }
         if markdown {
             self.buffer.set_language(None);
             let mut it = self.buffer.start_iter();
@@ -2184,7 +2243,7 @@ impl Tab {
         self.buffer.set_enable_undo(!markdown);
         self.busy.set(self.busy.get() - 1);
         // Line numbers for code, not for prose or plain text.
-        self.view.set_show_line_numbers(!markdown && self.buffer.language().is_some_and(|l| l.id() != "markdown"));
+        self.show_line_numbers(!markdown && self.buffer.language().is_some_and(|l| l.id() != "markdown"));
         self.view.set_highlight_current_line(!markdown);
         self.buffer.place_cursor(&self.buffer.start_iter());
         self.update_margin();
@@ -2334,7 +2393,7 @@ impl Tab {
     pub fn word_count(&self) -> usize {
         let (s, e) = self.buffer.bounds();
         self.buffer
-            .text(&s, &e, false)
+            .text(&s, &e, true)
             .split_whitespace()
             .filter(|w| w.chars().any(|c| c.is_alphanumeric()))
             .count()
@@ -2406,6 +2465,22 @@ impl Tab {
         let room = (adj.upper() - adj.page_size()).max(1.0);
         let off = if content > h { (adj.value() / room).clamp(0.0, 1.0) * (content - h) } else { 0.0 };
         (k, off)
+    }
+
+    /// Map pixels the visible band moves per pixel of text scrolled.
+    fn map_band_speed(&self) -> f64 {
+        let adj = self.scrolled.vadjustment();
+        let (k, _) = self.map_frame();
+        let h = self.map.height() as f64;
+        let room = (adj.upper() - adj.page_size()).max(1.0);
+        if adj.upper() * k > h { ((h - adj.page_size() * k) / room).max(0.0001) } else { k }
+    }
+
+    /// Scrolls so that the visible band's top is at `band_y` in the map.
+    fn map_drag_to(&self, band_y: f64) {
+        let adj = self.scrolled.vadjustment();
+        let room = (adj.upper() - adj.page_size()).max(adj.lower());
+        adj.set_value((band_y / self.map_band_speed()).clamp(adj.lower(), room));
     }
 
     fn draw_minimap(&self, cr: &gtk::cairo::Context, width: i32, height: i32) {
@@ -2580,37 +2655,50 @@ impl Tab {
         let map = self.map.clone();
         adj.connect_changed(move |_| map.queue_draw());
 
+        // The visible band follows the pointer: where it was grabbed stays
+        // under the pointer. Absolute, not relative to the start: the text
+        // height (and so the map's scale) is refined while scrolling.
         let drag = gtk::GestureDrag::new();
-        let start = Rc::new(Cell::new(0.0f64));
+        let grab = Rc::new(Cell::new((0.0f64, 0.0f64))); // (start y, y within the band)
+        // While the button is down, the band's target: kept there when the
+        // text height is refined after a scroll.
+        let target = Rc::new(Cell::new(None::<f64>));
         let me = Rc::downgrade(self);
-        let st = start.clone();
+        let tg = target.clone();
+        self.scrolled.vadjustment().connect_changed(move |_| {
+            if let (Some(t), Some(y)) = (me.upgrade(), tg.get()) {
+                t.map_drag_to(y);
+            }
+        });
+        let me = Rc::downgrade(self);
+        let g = grab.clone();
+        let tg = target.clone();
         drag.connect_drag_begin(move |_, _, y| {
             let Some(t) = me.upgrade() else { return };
-            let adj = t.scrolled.vadjustment();
-            let (k, off) = t.map_frame();
-            let vy = adj.value() * k - off;
-            let vh = adj.page_size() * k;
-            if y < vy || y > vy + vh {
-                // Outside the visible band: centre the text on that point.
-                let target = (y + off) / k - adj.page_size() / 2.0;
-                t.scroll_target.set(None);
-                adj.set_value(target.clamp(adj.lower(), (adj.upper() - adj.page_size()).max(adj.lower())));
-            }
-            st.set(adj.value());
-        });
-        let me = Rc::downgrade(self);
-        drag.connect_drag_update(move |_, _, dy| {
-            let Some(t) = me.upgrade() else { return };
+            t.scroll_target.set(None);
             let adj = t.scrolled.vadjustment();
             let (k, _) = t.map_frame();
-            let h = t.map.height() as f64;
-            let room = (adj.upper() - adj.page_size()).max(1.0);
-            // How far the visible band moves in the map per pixel of text.
-            let content = adj.upper() * k;
-            let per_px = if content > h { (h - adj.page_size() * k) / room } else { k };
-            let target = start.get() + dy / per_px.max(0.01);
-            adj.set_value(target.clamp(adj.lower(), room));
+            let band_y = adj.value() * t.map_band_speed();
+            let band_h = adj.page_size() * k;
+            let within = if y < band_y || y > band_y + band_h {
+                // Outside the band: centre it on the pointer.
+                band_h / 2.0
+            } else {
+                y - band_y
+            };
+            g.set((y, within));
+            tg.set(Some(y - within));
+            t.map_drag_to(y - within);
         });
+        let me = Rc::downgrade(self);
+        let tg = target.clone();
+        drag.connect_drag_update(move |_, _, dy| {
+            let Some(t) = me.upgrade() else { return };
+            let (y0, within) = grab.get();
+            tg.set(Some(y0 + dy - within));
+            t.map_drag_to(y0 + dy - within);
+        });
+        drag.connect_drag_end(move |_, _, _| target.set(None));
         self.map.add_controller(drag);
     }
 
@@ -2723,6 +2811,9 @@ impl Tab {
             return Some(gdk::Rectangle::new(0, -100_000, w, h));
         }
         let iter = self.buffer.iter_at_child_anchor(&slot.anchor);
+        if self.tag("fold").is_some_and(|t| iter.has_tag(&t)) {
+            return Some(gdk::Rectangle::new(0, -100_000, w, h)); // In a folded section.
+        }
         let rect = self.view.iter_location(&iter);
         let (vx, vy) = self.view.buffer_to_window_coords(gtk::TextWindowType::Widget, rect.x(), rect.y());
         let Some(p) = self.view.compute_point(&self.overlay, &gtk::graphene::Point::new(vx as f32, vy as f32)) else {
@@ -3137,6 +3228,14 @@ impl Tab {
     /// Scrolls so that the hit is in view, a third from the top.
     pub fn reveal_hit(&self, hit: &Hit) {
         let adj = self.scrolled.vadjustment();
+        // A hit in a folded section unfolds it.
+        let at = match &hit.table {
+            None => self.buffer.iter_at_offset(hit.start),
+            Some((a, _, _)) => self.buffer.iter_at_child_anchor(a),
+        };
+        if self.tag("fold").is_some_and(|t| at.has_tag(&t)) {
+            self.reveal(&at);
+        }
         let y = match &hit.table {
             None => {
                 let it = self.buffer.iter_at_offset(hit.start);
@@ -3267,8 +3366,10 @@ impl Tab {
         let (s, e) = self.buffer.bounds();
         let old: Vec<char> = self.buffer.text(&s, &e, true).chars().collect();
         let old_cursor = self.cursor_offset();
+        let folds = self.folded_lines();
         self.render_content(&md, true);
         self.set_wide_tables(&wide);
+        self.refold(&folds);
         self.hist_pos.set(i);
         self.hist_dirty.set(true);
         // The caret goes to where the text changed, not to where it was
