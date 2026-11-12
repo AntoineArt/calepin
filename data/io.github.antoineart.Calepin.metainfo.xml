@@ -27,6 +27,11 @@
   <url type="bugtracker">https://github.com/AntoineArt/calepin/issues</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.4.4" date="2026-11-12">
+      <description>
+        <p>Buttons show the hand under the pointer, and the pointer keeps the right shape over the text while middle-click scrolling. Code blocks stand out more, and their ``` lines show only while the caret is in the block.</p>
+      </description>
+    </release>
     <release version="0.4.3" date="2026-11-10">
       <description>
         <p>Middle-click scrolling works while the button is held (releasing stops it), as well as after a click.</p>
