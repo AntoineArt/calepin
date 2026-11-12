@@ -27,6 +27,11 @@
   <url type="bugtracker">https://github.com/AntoineArt/calepin/issues</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.4.5" date="2026-11-12">
+      <description>
+        <p>Much more contrast, in dark and light themes: the tab bar, separators, table borders and code blocks stand out even when the theme gives all its backgrounds one colour, and secondary text is readable. The active tab is clearly marked, and buttons react to hover and clicks.</p>
+      </description>
+    </release>
     <release version="0.4.4" date="2026-11-12">
       <description>
         <p>Buttons show the hand under the pointer, and the pointer keeps the right shape over the text while middle-click scrolling. Code blocks stand out more, and their ``` lines show only while the caret is in the block.</p>
