@@ -10,6 +10,7 @@ use gtk::{gdk, gio, glib, prelude::*};
 use sourceview5::prelude::*;
 
 use crate::editor::{BlockCmd, Tab, TabRef};
+use crate::pointer;
 use crate::session::{self, Session, TabState};
 use crate::theme::{self, Theme};
 use crate::i18n::{tr, trf};
@@ -202,7 +203,7 @@ fn btn(label: &str, tooltip: &str, markup: bool) -> gtk::Button {
     } else {
         l.set_text(label);
     }
-    let b = gtk::Button::builder().child(&l).tooltip_text(tooltip).focus_on_click(false).build();
+    let b = pointer::clickable(gtk::Button::builder().child(&l).tooltip_text(tooltip).focus_on_click(false).build());
     b.set_can_focus(false);
     b
 }
@@ -272,7 +273,7 @@ impl Window {
         let bar = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         bar.add_css_class("tabbar");
         bar.append(&tab_scroller);
-        let new_btn = gtk::Button::with_label("+");
+        let new_btn = pointer::clickable(gtk::Button::with_label("+"));
         new_btn.add_css_class("newtab");
         new_btn.set_tooltip_text(Some(tr("New tab (Ctrl+T)")));
         new_btn.set_can_focus(false);
@@ -301,11 +302,11 @@ impl Window {
         let find_label = gtk::Label::new(None);
         let find_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         find_box.add_css_class("findbar");
-        let prev = gtk::Button::from_icon_name("go-up-symbolic");
+        let prev = pointer::clickable(gtk::Button::from_icon_name("go-up-symbolic"));
         prev.set_tooltip_text(Some(tr("Previous (Shift+Enter)")));
-        let next = gtk::Button::from_icon_name("go-down-symbolic");
+        let next = pointer::clickable(gtk::Button::from_icon_name("go-down-symbolic"));
         next.set_tooltip_text(Some(tr("Next (Enter)")));
-        let close = gtk::Button::from_icon_name("window-close-symbolic");
+        let close = pointer::clickable(gtk::Button::from_icon_name("window-close-symbolic"));
         find_box.append(&find_entry);
         find_box.append(&find_label);
         find_box.append(&prev);
@@ -329,9 +330,9 @@ impl Window {
         update_label.set_hexpand(true);
         update_label.set_xalign(0.0);
         update_label.set_wrap(true);
-        let update_button = gtk::Button::with_label(tr("Restart"));
+        let update_button = pointer::clickable(gtk::Button::with_label(tr("Restart")));
         update_button.set_can_focus(false);
-        let update_close = gtk::Button::from_icon_name("window-close-symbolic");
+        let update_close = pointer::clickable(gtk::Button::from_icon_name("window-close-symbolic"));
         update_close.set_can_focus(false);
         let update_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         update_box.add_css_class("updatebar");
@@ -635,7 +636,7 @@ impl Window {
             dirty.add_css_class("dirty");
             let file = gtk::Image::from_icon_name("text-x-generic-symbolic");
             file.add_css_class("file");
-            let close = gtk::Button::from_icon_name("window-close-symbolic");
+            let close = pointer::clickable(gtk::Button::from_icon_name("window-close-symbolic"));
             close.add_css_class("close");
             close.set_can_focus(false);
             close.set_tooltip_text(Some(tr("Close (Ctrl+W)")));
@@ -1445,7 +1446,7 @@ impl Window {
         let weak = Rc::downgrade(self);
         // A fresh button: one click handler at a time.
         let b = self.update_button.borrow().clone();
-        let new = gtk::Button::with_label(button);
+        let new = pointer::clickable(gtk::Button::with_label(button));
         new.set_can_focus(false);
         if let Some(parent) = b.parent().and_downcast::<gtk::Box>() {
             parent.insert_child_after(&new, Some(&self.update_label));

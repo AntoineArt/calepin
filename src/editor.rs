@@ -9,6 +9,7 @@ use gtk::{gdk, gio, glib, pango, prelude::*};
 use sourceview5::prelude::*;
 
 use crate::model::{self, Block, Line, Span, Style, Table};
+use crate::pointer;
 use crate::table::{CellColors, TableView};
 use crate::theme::Theme;
 
@@ -124,8 +125,10 @@ pub struct Tab {
     auto_stopping: Cell<bool>,
     /// While it runs: the window, its press watcher, its focus handler.
     auto_window: RefCell<Option<(gtk::Window, gtk::EventController, glib::SignalHandlerId)>>,
-    /// The pointer cursor was set by the fold arrows.
-    fold_cursor: Cell<bool>,
+    /// The pointer over the text (view coordinates), and whether Ctrl is
+    /// held: what the pointer shape depends on.
+    pointer: Cell<Option<(f64, f64)>>,
+    ctrl: Cell<bool>,
     /// Line numbers drawn by Calepin: GtkSourceView's own would print the
     /// numbers of folded lines on top of each other.
     line_numbers: sourceview5::GutterRendererText,
@@ -291,7 +294,8 @@ impl Tab {
             auto_table: RefCell::new(None),
             auto_stopping: Cell::new(false),
             auto_window: RefCell::new(None),
-            fold_cursor: Cell::new(false),
+            pointer: Cell::new(None),
+            ctrl: Cell::new(false),
             line_numbers: sourceview5::GutterRendererText::new(),
             map_colors: RefCell::new([gdk::RGBA::BLACK; 5]),
             hit_marks: RefCell::new(Vec::new()),
@@ -782,18 +786,35 @@ impl Tab {
         });
         self.view.add_controller(click);
 
+        // The pointer shape follows the pointer, and Ctrl (links).
         let motion = gtk::EventControllerMotion::new();
         let weak = Rc::downgrade(self);
         motion.connect_motion(move |m, x, y| {
             let Some(t) = weak.upgrade() else { return };
-            if !t.markdown.get() {
-                return;
+            t.pointer.set(Some((x, y)));
+            t.ctrl.set(m.current_event_state().contains(gdk::ModifierType::CONTROL_MASK));
+            t.update_pointer();
+        });
+        let weak = Rc::downgrade(self);
+        motion.connect_leave(move |_| {
+            if let Some(t) = weak.upgrade() {
+                t.pointer.set(None);
+                t.update_pointer();
             }
-            let ctrl = m.current_event_state().contains(gdk::ModifierType::CONTROL_MASK);
-            let pointer = t.iter_at_point(x, y).is_some_and(|it| t.is_checkbox(&it) || (ctrl && t.link_at(&it).is_some()));
-            t.view.set_cursor_from_name(Some(if pointer { "pointer" } else { "text" }));
         });
         self.view.add_controller(motion);
+        let mods = gtk::EventControllerKey::new();
+        let weak = Rc::downgrade(self);
+        mods.connect_modifiers(move |_, state| {
+            if let Some(t) = weak.upgrade() {
+                let ctrl = state.contains(gdk::ModifierType::CONTROL_MASK);
+                if t.ctrl.replace(ctrl) != ctrl {
+                    t.update_pointer();
+                }
+            }
+            glib::Propagation::Proceed
+        });
+        self.view.add_controller(mods);
 
         // Clipboard speaks Markdown.
         let weak = Rc::downgrade(self);
@@ -825,6 +846,29 @@ impl Tab {
                 t.paste(false);
             }
         });
+    }
+
+    /// The one place that picks the pointer over the text: the scroll shape
+    /// while the middle click scrolls, the hand over what a click acts on
+    /// (fold arrows and "⋯", checkboxes, links with Ctrl), the text cursor
+    /// otherwise.
+    pub(super) fn update_pointer(&self) {
+        let name = if self.auto.get().is_some() {
+            pointer::SCROLL
+        } else if self.pointer.get().is_some_and(|(x, y)| self.clickable_at(x, y)) {
+            pointer::HAND
+        } else {
+            pointer::TEXT
+        };
+        self.view.set_cursor_from_name(Some(name));
+    }
+
+    fn clickable_at(&self, x: f64, y: f64) -> bool {
+        if self.fold_target_at(x, y).is_some() {
+            return true;
+        }
+        self.markdown.get()
+            && self.iter_at_point(x, y).is_some_and(|it| self.is_checkbox(&it) || (self.ctrl.get() && self.link_at(&it).is_some()))
     }
 
     fn iter_at_point(&self, x: f64, y: f64) -> Option<gtk::TextIter> {
@@ -3079,6 +3123,7 @@ impl Tab {
             glib::Propagation::Stop
         });
         tv.root.add_controller(scroll);
+        tv.set_scrolling(self.auto.get().is_some());
         self.tables.borrow_mut().push(TableSlot { anchor, view: tv.clone(), placeholder, width: Cell::new(1) });
         self.schedule_table_sync();
         tv

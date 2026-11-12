@@ -110,17 +110,6 @@ impl Tab {
             if t.fold_hover.replace(hover) != hover {
                 t.fold_area.queue_draw();
             }
-            // The hand over an arrow or a "⋯" only, the text cursor again
-            // after (other code sets it over checkboxes and links).
-            if t.auto.get().is_none() {
-                let over = t.fold_target_at(x, y).is_some();
-                if over {
-                    t.view.set_cursor_from_name(Some("pointer"));
-                } else if t.fold_cursor.get() {
-                    t.view.set_cursor_from_name(Some("text"));
-                }
-                t.fold_cursor.set(over);
-            }
         });
         let me = Rc::downgrade(self);
         motion.connect_leave(move |_| {
@@ -534,7 +523,7 @@ impl Tab {
     }
 
     /// The region whose arrow or "⋯" is under (x, y), view coordinates.
-    fn fold_target_at(&self, x: f64, y: f64) -> Option<Region> {
+    pub(super) fn fold_target_at(&self, x: f64, y: f64) -> Option<Region> {
         let line = self.line_at_widget_y(y)?;
         let r = self.fold_regions.borrow().iter().find(|r| r.start == line).copied()?;
         let left = self.text_left(line);

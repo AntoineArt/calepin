@@ -185,7 +185,7 @@ impl Tab {
             *self.auto_window.borrow_mut() = Some((win, press.upcast(), active));
         }
         self.auto.set(Some(AutoScroll { anchor: (x, y), pointer: (x, y), dragged: false, held: true, clock, sideways }));
-        self.set_auto_cursor(Some("all-scroll"));
+        self.set_scroll_pointer(true);
         self.fold_area.queue_draw();
         let me = self.me.borrow().clone();
         self.overlay.add_tick_callback(move |_, clock| {
@@ -218,16 +218,16 @@ impl Tab {
             glib::idle_add_local_once(move || win.remove_controller(&press));
         }
         if self.auto.take().is_some() {
-            self.set_auto_cursor(None);
+            self.set_scroll_pointer(false);
             self.fold_area.queue_draw();
         }
     }
 
-    /// The scroll cursor over the text and the tables, or back to normal.
-    fn set_auto_cursor(&self, name: Option<&str>) {
-        self.view.set_cursor_from_name(Some(name.unwrap_or("text")));
+    /// The scroll shape over the text and the tables, or back to normal.
+    fn set_scroll_pointer(&self, on: bool) {
+        self.update_pointer();
         for slot in self.tables.borrow().iter() {
-            slot.view.set_cursor(name);
+            slot.view.set_scrolling(on);
         }
     }
 

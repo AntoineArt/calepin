@@ -4,6 +4,7 @@ mod find;
 mod fold;
 mod i18n;
 mod model;
+mod pointer;
 mod session;
 mod table;
 mod theme;

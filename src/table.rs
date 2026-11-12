@@ -7,6 +7,7 @@ use std::rc::Rc;
 use gtk::{gdk, glib, prelude::*};
 
 use crate::model::{self, Align, Block, Line, Span, Style, Table};
+use crate::pointer;
 
 type Callback = Rc<dyn Fn()>;
 type ExitCallback = Rc<dyn Fn(bool)>;
@@ -51,7 +52,10 @@ pub struct TableView {
     /// started in a cell (selecting cells once it reaches another).
     resizing: Cell<Option<(usize, i32)>>,
     drag_from: Cell<Option<((usize, usize), (f64, f64))>>,
-    resize_cursor: Cell<bool>,
+    /// The pointer is on a column border.
+    near_border: Cell<bool>,
+    /// The middle click scrolls the document.
+    scrolling: Cell<bool>,
     /// Ctrl+Z (false) or Ctrl+Shift+Z / Ctrl+Y (true): the document's
     /// history, which holds the tables too.
     pub on_undo: RefCell<Option<ExitCallback>>,
@@ -59,7 +63,7 @@ pub struct TableView {
 }
 
 fn small_button(label: &str, tip: &str) -> gtk::Button {
-    let b = gtk::Button::with_label(crate::i18n::tr(label));
+    let b = pointer::clickable(gtk::Button::with_label(crate::i18n::tr(label)));
     b.set_tooltip_text(Some(crate::i18n::tr(tip)));
     b.set_can_focus(false);
     b.set_focus_on_click(false);
@@ -296,7 +300,8 @@ impl TableView {
             picked: RefCell::new(Vec::new()),
             resizing: Cell::new(None),
             drag_from: Cell::new(None),
-            resize_cursor: Cell::new(false),
+            near_border: Cell::new(false),
+            scrolling: Cell::new(false),
             colors: Cell::new(CellColors { code_fg: gdk::RGBA::RED, code_bg: gdk::RGBA::WHITE, link: gdk::RGBA::BLUE }),
         });
 
@@ -720,10 +725,30 @@ impl TableView {
         }
     }
 
-    /// The pointer cursor over every cell (None: the usual text cursor).
-    pub fn set_cursor(&self, name: Option<&str>) {
+    /// The middle click scrolls the document (its pointer over the cells).
+    pub fn set_scrolling(&self, on: bool) {
+        if self.scrolling.replace(on) != on {
+            self.update_pointer();
+        }
+    }
+
+    fn set_near_border(&self, near: bool) {
+        if self.near_border.replace(near) != near {
+            self.update_pointer();
+        }
+    }
+
+    /// The one place that picks the pointer over the cells.
+    fn update_pointer(&self) {
+        let name = if self.scrolling.get() {
+            pointer::SCROLL
+        } else if self.near_border.get() {
+            pointer::COL_RESIZE
+        } else {
+            pointer::TEXT
+        };
         for cell in self.cells.borrow().iter().flatten() {
-            cell.set_cursor_from_name(Some(name.unwrap_or("text")));
+            cell.set_cursor_from_name(Some(name));
         }
     }
 
@@ -1017,17 +1042,12 @@ impl TableView {
                 return;
             }
 
-            let near = t.border_at(x).is_some();
-            if t.resize_cursor.replace(near) != near {
-                t.set_cursor(near.then_some("col-resize"));
-            }
+            t.set_near_border(t.border_at(x).is_some());
         });
         let weak = Rc::downgrade(self);
         motion.connect_leave(move |_| {
-            if let Some(t) = weak.upgrade()
-                && t.resize_cursor.replace(false)
-            {
-                t.set_cursor(None);
+            if let Some(t) = weak.upgrade() {
+                t.set_near_border(false);
             }
         });
         self.grid.add_controller(motion);
