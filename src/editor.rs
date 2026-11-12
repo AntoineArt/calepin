@@ -125,6 +125,8 @@ pub struct Tab {
     auto_stopping: Cell<bool>,
     /// While it runs: the window, its press watcher, its focus handler.
     auto_window: RefCell<Option<(gtk::Window, gtk::EventController, glib::SignalHandlerId)>>,
+    /// A refresh of the hidden code fences is scheduled.
+    fences_pending: Cell<bool>,
     /// The pointer over the text (view coordinates), and whether Ctrl is
     /// held: what the pointer shape depends on.
     pointer: Cell<Option<(f64, f64)>>,
@@ -181,6 +183,12 @@ fn create_tags(buffer: &sourceview5::Buffer) {
     // Folded lines: hidden, still in the text.
     if let Some(t) = buffer.create_tag(Some("fold"), &[]) {
         t.set_invisible(true);
+    }
+    // Code fences away from the caret: Markdown, not content. Drawn in the
+    // block's colour, not invisible: GTK would drop the whole line, and the
+    // block its padding.
+    if let Some(t) = buffer.create_tag(Some("fence-hidden"), &[]) {
+        t.set_scale(0.6);
     }
     // Search hits, above every other style.
     buffer.create_tag(Some("find"), &[]);
@@ -294,6 +302,7 @@ impl Tab {
             auto_table: RefCell::new(None),
             auto_stopping: Cell::new(false),
             auto_window: RefCell::new(None),
+            fences_pending: Cell::new(false),
             pointer: Cell::new(None),
             ctrl: Cell::new(false),
             line_numbers: sourceview5::GutterRendererText::new(),
@@ -443,8 +452,10 @@ impl Tab {
             t.set_foreground_rgba(Some(&theme.legible_rgba("dark_foreground", 4.5)));
             t.set_paragraph_background_rgba(Some(&opaque(theme.mix("accent", 0.07))));
         });
+        let code_bg = opaque(theme.mix("foreground", 0.11));
+        set("fence-hidden", &|t| t.set_foreground_rgba(Some(&code_bg)));
         set("codeblock", &|t| {
-            t.set_paragraph_background_rgba(Some(&opaque(theme.mix("foreground", 0.06))));
+            t.set_paragraph_background_rgba(Some(&code_bg));
             t.set_pixels_below_lines(0);
             t.set_pixels_inside_wrap(0);
         });
@@ -609,7 +620,11 @@ impl Tab {
         let weak = Rc::downgrade(self);
         self.buffer.connect_mark_set(move |b, _, mark| {
             let Some(t) = weak.upgrade() else { return };
-            if *mark != b.get_insert() || t.caret_check.replace(true) {
+            if *mark != b.get_insert() {
+                return;
+            }
+            t.schedule_fences();
+            if t.caret_check.replace(true) {
                 return;
             }
             let w = Rc::downgrade(&t);
@@ -644,6 +659,7 @@ impl Tab {
             if let Some(t) = weak.upgrade() {
                 t.notify();
                 t.schedule_fold_scan();
+                t.schedule_fences();
             }
         });
         let weak = Rc::downgrade(self);
@@ -1007,6 +1023,65 @@ impl Tab {
                 list.push((name.to_string(), on));
             }
             _ => *ov = Some((pos, vec![(name.to_string(), on)])),
+        }
+    }
+
+    fn schedule_fences(&self) {
+        if self.fences_pending.replace(true) {
+            return;
+        }
+        let me = self.me.borrow().clone();
+        glib::idle_add_local_once(move || {
+            if let Some(t) = me.upgrade() {
+                t.fences_pending.set(false);
+                t.update_fences();
+            }
+        });
+    }
+
+    /// The fence lines (```lang) show only in the code block holding the
+    /// caret, where they can be edited; elsewhere they are thin empty bands,
+    /// the block's padding.
+    fn update_fences(&self) {
+        let (Some(hidden), Some(fence), Some(code)) = (self.tag("fence-hidden"), self.tag("fence"), self.tag("codeblock")) else { return };
+        let (s, e) = self.buffer.bounds();
+        self.buffer.remove_tag(&hidden, &s, &e);
+        if !self.markdown.get() {
+            return;
+        }
+        let count = self.buffer.line_count();
+        let is_code = |l: i32| self.buffer.iter_at_line(l).is_some_and(|it| it.has_tag(&code));
+        let line = self.cursor().line();
+        let shown = is_code(line).then(|| {
+            let (mut a, mut b) = (line, line);
+            while a > 0 && is_code(a - 1) {
+                a -= 1;
+            }
+            while b + 1 < count && is_code(b + 1) {
+                b += 1;
+            }
+            a..=b
+        });
+        let mut it = self.buffer.start_iter();
+        while it.has_tag(&fence) || it.forward_to_tag_toggle(Some(&fence)) {
+            let first = it.line();
+            let mut end = it;
+            end.forward_to_tag_toggle(Some(&fence));
+            let last = if end.starts_line() && end.line() > first { end.line() - 1 } else { end.line() };
+            for l in first..=last {
+                if shown.as_ref().is_some_and(|r| r.contains(&l)) {
+                    continue;
+                }
+                let (s, mut e) = self.line_bounds(l);
+                if s != e && s.has_tag(&fence) {
+                    e.forward_char();
+                    self.buffer.apply_tag(&hidden, &s, &e);
+                }
+            }
+            if end.is_end() {
+                break;
+            }
+            it = end;
         }
     }
 
