@@ -205,10 +205,6 @@ pub struct Hit {
     pub key: (i32, usize, usize, i32),
 }
 
-fn opaque(c: gdk::RGBA) -> gdk::RGBA {
-    gdk::RGBA::new(c.red(), c.green(), c.blue(), 1.0)
-}
-
 impl Tab {
     pub fn new(id: String, theme: &Theme, scheme: Option<&sourceview5::StyleScheme>, _settings: &sourceview5::SearchSettings) -> TabRef {
         let buffer = sourceview5::Buffer::new(None::<&gtk::TextTagTable>);
@@ -420,9 +416,12 @@ impl Tab {
                 f(&t);
             }
         };
-        let bright = theme.rgba("bright_foreground");
-        let accent = theme.rgba("accent");
-        let muted = theme.legible_rgba("muted", 3.0);
+        let p = theme.palette();
+        let c = |hex: &str| crate::theme::rgba(hex);
+        let bright = c(&p.bright);
+        let accent = c(&p.accent);
+        let faint = c(&p.faint);
+        let code_bg = c(&p.code_bg);
         for (name, scale, above, weight) in [
             ("h1", 1.6, 18, 800),
             ("h2", 1.35, 14, 700),
@@ -443,16 +442,15 @@ impl Tab {
         set("i", &|t| t.set_style(pango::Style::Italic));
         set("s", &|t| t.set_strikethrough(true));
         set("code", &|t| {
-            t.set_background_rgba(Some(&opaque(theme.mix("foreground", 0.09))));
-            t.set_foreground_rgba(Some(&theme.rgba("red")));
+            t.set_background_rgba(Some(&code_bg));
+            t.set_foreground_rgba(Some(&c(&p.code_fg)));
         });
         set("quote", &|t| {
             t.set_style(pango::Style::Italic);
             // Quoted text is content: as readable as body text.
             t.set_foreground_rgba(Some(&theme.legible_rgba("dark_foreground", 4.5)));
-            t.set_paragraph_background_rgba(Some(&opaque(theme.mix("accent", 0.07))));
+            t.set_paragraph_background_rgba(Some(&c(&p.quote_bg)));
         });
-        let code_bg = opaque(theme.mix("foreground", 0.11));
         set("fence-hidden", &|t| t.set_foreground_rgba(Some(&code_bg)));
         set("codeblock", &|t| {
             t.set_paragraph_background_rgba(Some(&code_bg));
@@ -460,7 +458,7 @@ impl Tab {
             t.set_pixels_inside_wrap(0);
         });
         set("fence", &|t| {
-            t.set_foreground_rgba(Some(&theme.legible_rgba("dark_foreground", 3.0)));
+            t.set_foreground_rgba(Some(&faint));
             t.set_scale(0.85);
             // Backticks sit high: keep them off the block's edge.
             t.set_pixels_above_lines(5);
@@ -472,15 +470,15 @@ impl Tab {
         });
         set("done", &|t| {
             t.set_strikethrough(true);
-            t.set_foreground_rgba(Some(&muted));
+            t.set_foreground_rgba(Some(&faint));
         });
         self.buffer.tag_table().foreach(|t| {
             if t.name().is_some_and(|n| n.starts_with(LINK)) {
-                t.set_foreground_rgba(Some(&accent));
+                t.set_foreground_rgba(Some(&c(&p.link)));
                 t.set_underline(pango::Underline::Single);
             }
         });
-        let find = [opaque(theme.mix("accent", 0.28)), theme.rgba("accent"), theme.rgba("background")];
+        let find = [c(&p.find_bg), accent, c(&p.bg)];
         set("find", &|t| t.set_background_rgba(Some(&find[0])));
         set("findcur", &|t| {
             t.set_background_rgba(Some(&find[1]));
@@ -488,21 +486,15 @@ impl Tab {
         });
         *self.find_colors.borrow_mut() = find;
         let cell = CellColors {
-            code_fg: theme.rgba("red"),
-            code_bg: opaque(theme.mix("foreground", 0.09)),
-            link: theme.rgba("accent"),
+            code_fg: c(&p.code_fg),
+            code_bg,
+            link: c(&p.link),
         };
         self.cell_colors.set(Some(cell));
         for slot in self.tables.borrow().iter() {
             slot.view.set_colors(cell);
         }
-        *self.map_colors.borrow_mut() = [
-            theme.rgba("foreground"),
-            theme.rgba("muted"),
-            theme.rgba("accent"),
-            opaque(theme.mix("foreground", 0.10)),
-            theme.rgba("background"),
-        ];
+        *self.map_colors.borrow_mut() = [c(&p.fg), faint, accent, c(&p.hover), c(&p.bg)];
         self.map.queue_draw();
         self.fold_area.queue_draw();
         let m = self.margin.get();

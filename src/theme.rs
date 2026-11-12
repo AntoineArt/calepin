@@ -178,20 +178,119 @@ fn contrast(a: [f64; 3], b: [f64; 3]) -> f64 {
     (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
 }
 
-/// `color` moved toward `toward` until it reads at `ratio` on `bg`.
-fn legible_over(color: &str, toward: &str, bg: &str, ratio: f64) -> String {
-    let (c, t, b) = (rgb(color), rgb(toward), rgb(bg));
-    for step in 0..=20 {
-        let k = step as f64 / 20.0;
-        let m = [0, 1, 2].map(|i| c[i] + (t[i] - c[i]) * k);
-        if contrast(m, b) >= ratio || step == 20 {
-            return format!("#{:02x}{:02x}{:02x}", (m[0] * 255.0).round() as u8, (m[1] * 255.0).round() as u8, (m[2] * 255.0).round() as u8);
+/// CIE lightness (0 black, 100 white): equal steps look equal, in dark
+/// and light themes alike.
+fn lightness(c: [f64; 3]) -> f64 {
+    let y = luminance(c);
+    if y > 0.008856 { 116.0 * y.cbrt() - 16.0 } else { 903.3 * y }
+}
+
+/// `color` moved toward `toward` until `enough` holds for it.
+fn mix_until(color: &str, toward: &str, enough: impl Fn([f64; 3]) -> bool) -> String {
+    let (c, t) = (rgb(color), rgb(toward));
+    for step in 0..=100 {
+        let k = step as f64 / 100.0;
+        // Rounded first: the test holds for the colour shown.
+        let m = [0, 1, 2].map(|i| ((c[i] + (t[i] - c[i]) * k) * 255.0).round());
+        if enough(m.map(|x| x / 255.0)) || step == 100 {
+            return format!("#{:02x}{:02x}{:02x}", m[0] as u8, m[1] as u8, m[2] as u8);
         }
     }
     unreachable!()
 }
 
+/// `color` moved toward `toward` until it reads at `ratio` on `bg`.
+fn legible_over(color: &str, toward: &str, bg: &str, ratio: f64) -> String {
+    let b = rgb(bg);
+    mix_until(color, toward, |m| contrast(m, b) >= ratio)
+}
+
+/// `color` moved toward `toward` until its lightness is `delta` away from
+/// `bg`'s.
+fn apart_from(color: &str, toward: &str, bg: &str, delta: f64) -> String {
+    let l = lightness(rgb(bg));
+    mix_until(color, toward, |m| (lightness(m) - l).abs() >= delta)
+}
+
+/// The colours Calepin draws with, derived from the theme rather than taken
+/// as they are: Omarchy themes often give all their backgrounds one colour,
+/// and their `muted` is often meant for decoration. Text reads at a set
+/// contrast ratio; each layer (bars, hover, pressed, borders) stands a set
+/// lightness step away from the background.
+pub struct Palette {
+    pub bg: String,
+    pub fg: String,
+    pub bright: String,
+    pub accent: String,
+    pub selection: String,
+    /// Secondary text (inactive tabs, counts, quotes): WCAG AA.
+    pub text2: String,
+    /// Text that may recede (fences, done items, line numbers, disabled).
+    pub faint: String,
+    /// Links: accent, readable as text.
+    pub link: String,
+    /// Bars, header cells, popovers.
+    pub surface: String,
+    pub current_line: String,
+    pub hover: String,
+    pub pressed: String,
+    /// Borders and separators.
+    pub border: String,
+    pub code_bg: String,
+    pub code_fg: String,
+    pub quote_bg: String,
+    pub find_bg: String,
+}
+
+/// Text: contrast ratios against the background (WCAG).
+mod ratio {
+    pub const TEXT2: f64 = 4.5;
+    pub const FAINT: f64 = 3.0;
+}
+
+/// Layers: lightness steps away from the background (CIE L*, 0-100).
+mod step {
+    pub const CURRENT_LINE: f64 = 4.0;
+    pub const SURFACE: f64 = 9.0;
+    pub const CODE: f64 = 9.0;
+    pub const QUOTE: f64 = 7.0;
+    pub const HOVER: f64 = 18.0;
+    pub const PRESSED: f64 = 28.0;
+    pub const BORDER: f64 = 22.0;
+    pub const SELECTION: f64 = 16.0;
+    pub const FIND: f64 = 18.0;
+}
+
+pub fn rgba(hex: &str) -> gdk::RGBA {
+    gdk::RGBA::parse(hex).unwrap_or(gdk::RGBA::BLACK)
+}
+
 impl Theme {
+    pub fn palette(&self) -> Palette {
+        let (bg, fg, accent) = (self.c("background"), self.c("foreground"), self.c("accent"));
+        let layer = |d: f64| apart_from(&bg, &fg, &bg, d);
+        let code_bg = layer(step::CODE);
+        Palette {
+            text2: self.legible("muted", ratio::TEXT2),
+            faint: self.legible("muted", ratio::FAINT),
+            link: legible_over(&accent, &fg, &bg, ratio::TEXT2),
+            selection: apart_from(&self.c("selection"), &accent, &bg, step::SELECTION),
+            surface: layer(step::SURFACE),
+            current_line: layer(step::CURRENT_LINE),
+            hover: layer(step::HOVER),
+            pressed: layer(step::PRESSED),
+            border: layer(step::BORDER),
+            code_fg: legible_over(&self.c("red"), &fg, &code_bg, ratio::TEXT2),
+            quote_bg: apart_from(&bg, &accent, &bg, step::QUOTE),
+            find_bg: apart_from(&bg, &accent, &bg, step::FIND),
+            code_bg,
+            bright: self.c("bright_foreground"),
+            bg,
+            fg,
+            accent,
+        }
+    }
+
     pub fn load() -> Theme {
         let text = std::fs::read_to_string(theme_state_dir().join("theme/colors.toml")).unwrap_or_default();
         let mut colors = parse_colors(&text);
@@ -257,34 +356,11 @@ impl Theme {
     }
 
     pub fn legible_rgba(&self, key: &str, ratio: f64) -> gdk::RGBA {
-        gdk::RGBA::parse(self.legible(key, ratio)).unwrap_or(gdk::RGBA::BLACK)
-    }
-
-    pub fn rgba(&self, key: &str) -> gdk::RGBA {
-        gdk::RGBA::parse(self.c(key)).unwrap_or(gdk::RGBA::BLACK)
-    }
-
-    /// `key` blended over the background, as an opaque colour.
-    pub fn mix(&self, key: &str, amount: f32) -> gdk::RGBA {
-        let a = self.rgba("background");
-        let b = self.rgba(key);
-        gdk::RGBA::new(
-            a.red() + (b.red() - a.red()) * amount,
-            a.green() + (b.green() - a.green()) * amount,
-            a.blue() + (b.blue() - a.blue()) * amount,
-            1.0,
-        )
+        rgba(&self.legible(key, ratio))
     }
 
     pub fn css(&self, font_size: f64) -> String {
-        let bg = self.c("background");
-        let fg = self.c("foreground");
-        let accent = self.c("accent");
-        // Tab names, counts, table controls: secondary, but text.
-        let muted = self.legible("muted", 3.0);
-        let dbg = self.c("dark_background");
-        let ddbg = self.c("darker_background");
-        let sel = self.c("selection");
+        let Palette { bg, fg, bright, accent, selection: sel, text2, faint, surface, hover, pressed, border, .. } = self.palette();
         let font = &self.font;
         format!(
             r#"
@@ -294,78 +370,95 @@ window.calepin textview, window.calepin textview text {{
   font-family: "{font}", monospace; font-size: {font_size}pt;
 }}
 window.calepin textview text selection {{ background: {sel}; color: {fg}; }}
-window.calepin .tabbar {{ background: {dbg}; padding: 4px 6px 0 6px; }}
-window.calepin .tab {{
-  padding: 3px 4px 3px 12px; margin-right: 2px; border-radius: 7px 7px 0 0;
-  color: {muted}; background: transparent;
+window.calepin button, window.calepin .tab {{
+  transition: background-color 120ms ease-out, color 120ms ease-out;
 }}
-window.calepin .tab:hover {{ background: alpha({bg}, 0.5); color: {fg}; }}
-window.calepin .tab.active {{ background: {bg}; color: {fg}; }}
+/* Tabs: inactive ones recede into the bar; the active one is the page
+   itself: its background, outlined, open onto the text, bright bold text. */
+window.calepin .tabbar {{ background: {surface}; padding: 5px 6px 0 6px; border-bottom: 1px solid {border}; }}
+window.calepin .tab {{
+  padding: 4px 4px 4px 12px; margin-right: 2px; margin-bottom: -1px; border-radius: 7px 7px 0 0;
+  color: {text2}; background: transparent; border: 1px solid transparent; border-bottom: none;
+}}
+window.calepin .tab:hover {{ background: {hover}; color: {bright}; }}
+window.calepin .tab.active {{
+  background: {bg}; color: {bright}; border-color: {border};
+}}
+window.calepin .tab.active label {{ font-weight: bold; }}
 window.calepin .tab label {{ font-family: "{font}", monospace; font-size: 10pt; }}
 window.calepin .tab .close {{
   min-width: 18px; min-height: 18px; padding: 0; margin-left: 6px;
   border-radius: 5px; background: transparent; box-shadow: none; border: none;
-  color: {muted}; opacity: 0;
+  color: {text2}; opacity: 0;
 }}
 window.calepin .tab:hover .close, window.calepin .tab.active .close {{ opacity: 1; }}
-window.calepin .tab .close:hover {{ background: {ddbg}; color: {fg}; }}
+window.calepin .tab .close:hover {{ background: {pressed}; color: {bright}; }}
+window.calepin .tab .close:active {{ background: {border}; }}
 window.calepin .tab .dirty {{ color: {accent}; margin-left: 4px; font-size: 9pt; }}
-window.calepin .tab .file {{ color: {muted}; margin-right: 6px; -gtk-icon-size: 12px; }}
+window.calepin .tab .file {{ color: {text2}; margin-right: 6px; -gtk-icon-size: 12px; }}
+window.calepin .tab.active .file, window.calepin .tab:hover .file {{ color: {fg}; }}
 window.calepin .tab .file.modified {{ color: {accent}; }}
 window.calepin .newtab {{
   min-width: 26px; min-height: 22px; padding: 0; margin: 0 0 4px 2px;
-  background: transparent; box-shadow: none; border: none; color: {muted}; border-radius: 6px;
+  background: transparent; box-shadow: none; border: none; color: {text2}; border-radius: 6px;
 }}
-window.calepin .newtab:hover {{ background: {bg}; color: {fg}; }}
+window.calepin .newtab:hover {{ background: {hover}; color: {bright}; }}
+window.calepin .newtab:active {{ background: {pressed}; }}
 window.calepin .toolbar {{
-  background: {bg}; padding: 3px 10px; border-bottom: 1px solid {dbg};
+  background: {bg}; padding: 3px 10px; border-bottom: 1px solid {border};
 }}
 window.calepin .toolbar button {{
   min-height: 24px; min-width: 28px; padding: 0 7px; margin: 0 1px;
   border-radius: 5px; background: transparent; box-shadow: none; border: none;
   color: {fg}; font-family: "{font}", monospace; font-size: 10pt;
 }}
-window.calepin .toolbar button:hover {{ background: {dbg}; }}
-window.calepin .toolbar button:active {{ background: {ddbg}; }}
-window.calepin .toolbar button:disabled {{ color: {muted}; opacity: 0.5; }}
-window.calepin .toolbar .sep {{ background: {dbg}; min-width: 1px; margin: 4px 6px; }}
-window.calepin .toolbar .count {{ color: {muted}; font-size: 9pt; margin-left: 8px; }}
-window.calepin label.version {{ color: {muted}; opacity: 0.55; font-size: 8pt; margin: 2px 8px 4px 8px; }}
-window.calepin .updatebar {{ background: alpha({accent}, 0.14); padding: 6px 12px; border-bottom: 1px solid {dbg}; }}
-window.calepin .updatebar button {{ background: transparent; box-shadow: none; border: 1px solid alpha({accent}, 0.5); color: {fg}; border-radius: 6px; padding: 2px 10px; }}
-window.calepin .findbar {{ background: {dbg}; padding: 4px 10px; border-top: 1px solid {ddbg}; }}
-window.calepin .findbar entry {{ background: {bg}; color: {fg}; min-height: 26px; }}
+window.calepin .toolbar button:hover {{ background: {hover}; color: {bright}; }}
+window.calepin .toolbar button:active {{ background: {pressed}; }}
+window.calepin .toolbar button:disabled {{ color: {faint}; }}
+window.calepin .toolbar .sep {{ background: {border}; min-width: 1px; margin: 4px 6px; }}
+window.calepin .toolbar .count {{ color: {text2}; font-size: 9pt; margin-left: 8px; }}
+window.calepin label.version {{ color: {faint}; font-size: 8pt; margin: 2px 8px 4px 8px; }}
+window.calepin .updatebar {{ background: alpha({accent}, 0.18); padding: 6px 12px; border-bottom: 1px solid {border}; }}
+window.calepin .updatebar button {{ background: transparent; box-shadow: none; border: 1px solid {accent}; color: {fg}; border-radius: 6px; padding: 2px 10px; }}
+window.calepin .updatebar button:hover {{ background: alpha({accent}, 0.3); color: {bright}; }}
+window.calepin .updatebar button:active {{ background: alpha({accent}, 0.45); }}
+window.calepin .findbar {{ background: {surface}; padding: 4px 10px; border-top: 1px solid {border}; }}
+window.calepin .findbar entry {{ background: {bg}; color: {fg}; min-height: 26px; border: 1px solid {border}; }}
 window.calepin .findbar button {{ background: transparent; box-shadow: none; border: none; color: {fg}; }}
-window.calepin .findbar label {{ color: {muted}; font-size: 9pt; }}
-window.calepin popover contents {{ background: {dbg}; color: {fg}; }}
-window.calepin popover entry {{ background: {bg}; color: {fg}; }}
-window.calepin scrollbar slider {{ background: alpha({muted}, 0.6); }}
+window.calepin .findbar button:hover {{ background: {hover}; color: {bright}; }}
+window.calepin .findbar button:active {{ background: {pressed}; }}
+window.calepin .findbar entry:focus-within, window.calepin popover entry:focus-within {{ border-color: {accent}; }}
+window.calepin .findbar label {{ color: {text2}; font-size: 9pt; }}
+window.calepin popover contents {{ background: {surface}; color: {fg}; border: 1px solid {border}; }}
+window.calepin popover entry {{ background: {bg}; color: {fg}; border: 1px solid {border}; }}
+window.calepin scrollbar slider {{ background: {faint}; }}
 window.calepin scrollbar {{ background: transparent; }}
 window.calepin .mw-table {{ margin: 4px 0 6px 0; }}
-window.calepin .mw-grid {{ border: 1px solid {ddbg}; border-radius: 6px; }}
+window.calepin .mw-grid {{ border: 1px solid {border}; border-radius: 6px; }}
 window.calepin textview.mw-cell, window.calepin textview.mw-cell text {{
   background: {bg}; color: {fg};
   font-family: "{font}", monospace; font-size: {font_size}pt;
 }}
-window.calepin textview.mw-cell {{ border-right: 1px solid {ddbg}; border-bottom: 1px solid {ddbg}; }}
+window.calepin textview.mw-cell {{ border-right: 1px solid {border}; border-bottom: 1px solid {border}; }}
 window.calepin textview.mw-cell.last-col {{ border-right: none; }}
 window.calepin textview.mw-cell.last-row {{ border-bottom: none; }}
-window.calepin textview.mw-cell.header, window.calepin textview.mw-cell.header text {{ background: {dbg}; font-weight: bold; }}
-window.calepin textview.mw-cell:focus-within, window.calepin textview.mw-cell:focus-within text {{ background: alpha({accent}, 0.10); }}
-window.calepin textview.mw-cell text selection {{ background: alpha({accent}, 0.40); color: {fg}; }}
-window.calepin textview.mw-cell.picked, window.calepin textview.mw-cell.picked text {{ background: alpha({accent}, 0.28); }}
-window.calepin .mw-table.selected .mw-grid {{ border-color: {sel}; }}
+window.calepin textview.mw-cell.header, window.calepin textview.mw-cell.header text {{ background: {surface}; font-weight: bold; }}
+window.calepin textview.mw-cell:focus-within, window.calepin textview.mw-cell:focus-within text {{ background: alpha({accent}, 0.14); }}
+window.calepin textview.mw-cell text selection {{ background: alpha({accent}, 0.45); color: {fg}; }}
+window.calepin textview.mw-cell.picked, window.calepin textview.mw-cell.picked text {{ background: alpha({accent}, 0.32); }}
+window.calepin .mw-table.selected .mw-grid {{ border-color: {accent}; }}
 window.calepin .mw-table.selected textview.mw-cell, window.calepin .mw-table.selected textview.mw-cell text {{ background: {sel}; }}
 window.calepin .mw-table-controls button {{
   min-height: 20px; padding: 0 6px; background: transparent; box-shadow: none; border: none;
-  color: {muted}; font-size: 9pt; border-radius: 4px;
+  color: {text2}; font-size: 9pt; border-radius: 4px;
 }}
-window.calepin .mw-table-controls button:hover {{ background: {dbg}; color: {fg}; }}
+window.calepin .mw-table-controls button:hover {{ background: {hover}; color: {bright}; }}
+window.calepin .mw-table-controls button:active {{ background: {pressed}; }}
 window.calepin textview.minimap, window.calepin textview.minimap text {{
   background: {bg}; font-size: 1.6pt; font-family: "{font}", monospace;
 }}
-window.calepin .minimap {{ border-left: 1px solid {dbg}; }}
-window.calepin .minimap slider {{ background: alpha({accent}, 0.14); }}
+window.calepin .minimap {{ border-left: 1px solid {border}; }}
+window.calepin .minimap slider {{ background: alpha({accent}, 0.2); }}
 "#
         )
     }
@@ -374,10 +467,8 @@ window.calepin .minimap slider {{ background: alpha({accent}, 0.14); }}
     /// search, syntax highlighting for non-Markdown files).
     pub fn scheme_xml(&self, id: &str) -> String {
         let k = |k: &str| self.c(k);
-        let current_line = {
-            let c = self.mix("foreground", 0.05);
-            format!("#{:02x}{:02x}{:02x}", (c.red() * 255.0) as u8, (c.green() * 255.0) as u8, (c.blue() * 255.0) as u8)
-        };
+        let p = self.palette();
+        let current_line = &p.current_line;
         format!(
             r##"<?xml version="1.0" encoding="UTF-8"?>
 <style-scheme id="{id}" name="Calepin Omarchy" version="1.0">
@@ -386,7 +477,7 @@ window.calepin .minimap slider {{ background: alpha({accent}, 0.14); }}
   <style name="selection-unfocused" background="{sel}"/>
   <style name="cursor" foreground="{accent}"/>
   <style name="current-line" background="{current_line}"/>
-  <style name="line-numbers" foreground="{muted}" background="{bg}"/>
+  <style name="line-numbers" foreground="{faint}" background="{bg}"/>
   <style name="current-line-number" foreground="{fg}" background="{current_line}" bold="true"/>
   <style name="bracket-match" background="{sel}" bold="true"/>
   <style name="bracket-mismatch" foreground="{red}" underline="single"/>
@@ -426,9 +517,10 @@ window.calepin .minimap slider {{ background: alpha({accent}, 0.14); }}
 "##,
             fg = k("foreground"),
             bg = k("background"),
-            sel = k("selection"),
+            sel = p.selection,
             accent = k("accent"),
-            muted = self.legible("muted", 3.0),
+            muted = p.text2,
+            faint = p.faint,
             red = k("red"),
             green = k("green"),
             yellow = k("yellow"),
@@ -510,6 +602,23 @@ pub fn watch(on_change: impl Fn(Theme) + 'static) -> Vec<gio::FileMonitor> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn layers_stand_apart_even_with_one_background() {
+        for (mode, bg, fg) in [("dark", "#000000", "#e6f4ff"), ("light", "#fafafa", "#1f1f1f")] {
+            let colors = [("mode", mode), ("background", bg), ("dark_background", bg), ("darker_background", bg), ("foreground", fg), ("muted", bg)]
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            let p = Theme { dark: mode == "dark", colors, font: String::new() }.palette();
+            let apart = |c: &str| (lightness(rgb(c)) - lightness(rgb(bg))).abs();
+            assert!(apart(&p.surface) >= step::SURFACE);
+            assert!(apart(&p.border) >= step::BORDER);
+            assert!(apart(&p.pressed) > apart(&p.hover) && apart(&p.hover) > apart(&p.surface));
+            assert!(contrast(rgb(&p.text2), rgb(bg)) >= ratio::TEXT2);
+            assert!(contrast(rgb(&p.code_fg), rgb(&p.code_bg)) >= ratio::TEXT2);
+        }
+    }
 
     #[test]
     fn faint_colours_become_legible() {
