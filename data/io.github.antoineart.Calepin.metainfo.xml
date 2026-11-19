@@ -27,6 +27,11 @@
   <url type="bugtracker">https://github.com/AntoineArt/calepin/issues</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.4.7" date="2026-11-19">
+      <description>
+        <p>Notes restored at start-up show their text again: under GTK's GPU renderers the text of a restored tab could stay blank. Scrolling over the text is GTK's own again, as in every other application (speed and inertia follow the system); over tables the page moves with the same steps and inertia.</p>
+      </description>
+    </release>
     <release version="0.4.6" date="2026-11-19">
       <description>
         <p>Scrolling behaves the same everywhere: the wheel glides a notch at a time, the touchpad follows the fingers and keeps its momentum, over the text and over tables alike, without speeding up, slowing down or stopping dead. The view no longer jumps when the caret moves in and out of code blocks. Code blocks that name their language are syntax highlighted in the theme's colours.</p>
