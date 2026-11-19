@@ -14,7 +14,9 @@ use crate::table::{CellColors, TableView};
 use crate::theme::Theme;
 
 mod autoscroll;
+mod codehl;
 mod folding;
+mod smooth;
 
 pub use autoscroll::set_middle_scroll;
 
@@ -127,6 +129,10 @@ pub struct Tab {
     auto_window: RefCell<Option<(gtk::Window, gtk::EventController, glib::SignalHandlerId)>>,
     /// A refresh of the hidden code fences is scheduled.
     fences_pending: Cell<bool>,
+    /// Code block highlighting: a pass is scheduled; the blocks (language
+    /// and text) coloured by the last pass.
+    code_hl_pending: RefCell<Option<glib::SourceId>>,
+    code_hl_done: RefCell<std::collections::HashSet<u64>>,
     /// The pointer over the text (view coordinates), and whether Ctrl is
     /// held: what the pointer shape depends on.
     pointer: Cell<Option<(f64, f64)>>,
@@ -149,9 +155,14 @@ pub struct Tab {
     /// Set while a CSV file is shown as a table.
     pub csv: RefCell<Option<crate::csv::Sheet>>,
     me: RefCell<std::rc::Weak<Tab>>,
-    /// Smooth wheel scrolling: where the animation is heading.
+    /// Smooth scrolling (see `smooth.rs`): where a wheel animation is
+    /// heading, the speed of a touchpad fling (px/s), whether a frame
+    /// callback runs, the last frame's time, the value it left.
     scroll_target: Cell<Option<f64>>,
+    scroll_vel: Cell<f64>,
+    scroll_ticking: Cell<bool>,
     scroll_clock: Cell<i64>,
+    scroll_set: Cell<f64>,
     zoom_acc: Cell<f64>,
     on_zoom: RefCell<Option<ZoomCallback>>,
 }
@@ -186,10 +197,9 @@ fn create_tags(buffer: &sourceview5::Buffer) {
     }
     // Code fences away from the caret: Markdown, not content. Drawn in the
     // block's colour, not invisible: GTK would drop the whole line, and the
-    // block its padding.
-    if let Some(t) = buffer.create_tag(Some("fence-hidden"), &[]) {
-        t.set_scale(0.6);
-    }
+    // block its padding. Same size as a shown fence, so the text never moves
+    // when the caret enters or leaves a block.
+    buffer.create_tag(Some("fence-hidden"), &[]);
     // Search hits, above every other style.
     buffer.create_tag(Some("find"), &[]);
     buffer.create_tag(Some("findcur"), &[]);
@@ -299,6 +309,8 @@ impl Tab {
             auto_stopping: Cell::new(false),
             auto_window: RefCell::new(None),
             fences_pending: Cell::new(false),
+            code_hl_pending: RefCell::new(None),
+            code_hl_done: RefCell::new(Default::default()),
             pointer: Cell::new(None),
             ctrl: Cell::new(false),
             line_numbers: sourceview5::GutterRendererText::new(),
@@ -315,7 +327,10 @@ impl Tab {
             csv: RefCell::new(None),
             me: RefCell::new(std::rc::Weak::new()),
             scroll_target: Cell::new(None),
+            scroll_vel: Cell::new(0.0),
+            scroll_ticking: Cell::new(false),
             scroll_clock: Cell::new(0),
+            scroll_set: Cell::new(0.0),
             zoom_acc: Cell::new(0.0),
             on_zoom: RefCell::new(None),
         });
@@ -333,61 +348,6 @@ impl Tab {
 
     pub fn set_on_zoom(&self, f: Rc<dyn Fn(f64)>) {
         *self.on_zoom.borrow_mut() = Some(f);
-    }
-
-    fn on_scroll(&self, c: &gtk::EventControllerScroll, dy: f64) -> glib::Propagation {
-        let wheel = c.unit() == gdk::ScrollUnit::Wheel;
-        if c.current_event_state().contains(gdk::ModifierType::CONTROL_MASK) {
-            // Ctrl+wheel zooms, one step per notch (or per ~30 px on a touchpad).
-            let acc = self.zoom_acc.get() + if wheel { dy } else { dy / 30.0 };
-            let steps = acc.trunc();
-            self.zoom_acc.set(acc - steps);
-            if steps != 0.0 {
-                let cb = self.on_zoom.borrow().clone();
-                if let Some(cb) = cb {
-                    cb(-steps);
-                }
-            }
-            return glib::Propagation::Stop;
-        }
-        if c.current_event_state().contains(gdk::ModifierType::SHIFT_MASK) {
-            // Shift+wheel scrolls a wide table sideways.
-            return glib::Propagation::Proceed;
-        }
-        if !wheel || dy == 0.0 {
-            // Touchpads already scroll smoothly, with kinetic deceleration.
-            self.scroll_target.set(None);
-            return glib::Propagation::Proceed;
-        }
-        let adj = self.scrolled.vadjustment();
-        let step = adj.page_size().powf(2.0 / 3.0);
-        let base = self.scroll_target.get().unwrap_or(adj.value());
-        let target = (base + dy * step).clamp(adj.lower(), (adj.upper() - adj.page_size()).max(adj.lower()));
-        let animating = self.scroll_target.get().is_some();
-        self.scroll_target.set(Some(target));
-        if !animating {
-            self.scroll_clock.set(0);
-            let me = self.me.borrow().clone();
-            self.view.add_tick_callback(move |_, clock| {
-                let Some(t) = me.upgrade() else { return glib::ControlFlow::Break };
-                let Some(target) = t.scroll_target.get() else { return glib::ControlFlow::Break };
-                let now = clock.frame_time();
-                let last = t.scroll_clock.replace(now);
-                let dt = if last == 0 { 1.0 / 60.0 } else { ((now - last) as f64 / 1e6).clamp(0.001, 0.1) };
-                let adj = t.scrolled.vadjustment();
-                let v = adj.value();
-                // Ease out: cover ~90 % of the distance in 120 ms.
-                let next = v + (target - v) * (1.0 - (-dt / 0.052).exp());
-                if (target - next).abs() < 0.5 {
-                    adj.set_value(target);
-                    t.scroll_target.set(None);
-                    return glib::ControlFlow::Break;
-                }
-                adj.set_value(next);
-                glib::ControlFlow::Continue
-            });
-        }
-        glib::Propagation::Stop
     }
 
     pub fn set_on_change(&self, f: Rc<dyn Fn()>) {
@@ -495,6 +455,8 @@ impl Tab {
             slot.view.set_colors(cell);
         }
         *self.map_colors.borrow_mut() = [c(&p.fg), faint, accent, c(&p.hover), c(&p.bg)];
+        // Code colours come from the scheme just set.
+        self.reset_code_hl();
         self.map.queue_draw();
         self.fold_area.queue_draw();
         let m = self.margin.get();
@@ -652,6 +614,7 @@ impl Tab {
                 t.notify();
                 t.schedule_fold_scan();
                 t.schedule_fences();
+                t.schedule_code_hl();
             }
         });
         let weak = Rc::downgrade(self);
@@ -692,16 +655,9 @@ impl Tab {
             });
         }
 
-        // Smooth mouse-wheel scrolling and Ctrl+wheel zoom, over the text and
+        // Wheel and touchpad scrolling, Ctrl+wheel zoom, over the text and
         // the tables drawn in the overlay.
-        let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
-        scroll.set_propagation_phase(gtk::PropagationPhase::Capture);
-        let weak = Rc::downgrade(self);
-        scroll.connect_scroll(move |c, _, dy| match weak.upgrade() {
-            Some(t) => t.on_scroll(c, dy),
-            None => glib::Propagation::Proceed,
-        });
-        self.overlay.add_controller(scroll);
+        self.connect_smooth_scroll();
 
         self.connect_minimap();
 
@@ -1033,18 +989,16 @@ impl Tab {
 
     /// The fence lines (```lang) show only in the code block holding the
     /// caret, where they can be edited; elsewhere they are thin empty bands,
-    /// the block's padding.
+    /// the block's padding. Only the lines whose state changes are touched:
+    /// a tag changed over the whole text makes GTK measure every line again,
+    /// and the view jumps while it scrolls.
     fn update_fences(&self) {
         let (Some(hidden), Some(fence), Some(code)) = (self.tag("fence-hidden"), self.tag("fence"), self.tag("codeblock")) else { return };
-        let (s, e) = self.buffer.bounds();
-        self.buffer.remove_tag(&hidden, &s, &e);
-        if !self.markdown.get() {
-            return;
-        }
+        let rich = self.markdown.get();
         let count = self.buffer.line_count();
         let is_code = |l: i32| self.buffer.iter_at_line(l).is_some_and(|it| it.has_tag(&code));
         let line = self.cursor().line();
-        let shown = is_code(line).then(|| {
+        let shown = (rich && is_code(line)).then(|| {
             let (mut a, mut b) = (line, line);
             while a > 0 && is_code(a - 1) {
                 a -= 1;
@@ -1054,26 +1008,61 @@ impl Tab {
             }
             a..=b
         });
+        // Lines to hide: the fences away from the caret.
+        let mut want = std::collections::BTreeSet::new();
+        if rich {
+            let mut it = self.buffer.start_iter();
+            while it.has_tag(&fence) || it.forward_to_tag_toggle(Some(&fence)) {
+                let first = it.line();
+                let mut end = it;
+                end.forward_to_tag_toggle(Some(&fence));
+                let last = if end.starts_line() && end.line() > first { end.line() - 1 } else { end.line() };
+                for l in first..=last {
+                    if shown.as_ref().is_some_and(|r| r.contains(&l)) {
+                        continue;
+                    }
+                    let (s, _) = self.line_bounds(l);
+                    if !s.ends_line() && s.has_tag(&fence) {
+                        want.insert(l);
+                    }
+                }
+                if end.is_end() {
+                    break;
+                }
+                it = end;
+            }
+        }
+        // Lines hidden now.
+        let mut have = std::collections::BTreeSet::new();
         let mut it = self.buffer.start_iter();
-        while it.has_tag(&fence) || it.forward_to_tag_toggle(Some(&fence)) {
+        while it.has_tag(&hidden) || it.forward_to_tag_toggle(Some(&hidden)) {
             let first = it.line();
             let mut end = it;
-            end.forward_to_tag_toggle(Some(&fence));
+            end.forward_to_tag_toggle(Some(&hidden));
             let last = if end.starts_line() && end.line() > first { end.line() - 1 } else { end.line() };
-            for l in first..=last {
-                if shown.as_ref().is_some_and(|r| r.contains(&l)) {
-                    continue;
-                }
-                let (s, mut e) = self.line_bounds(l);
-                if s != e && s.has_tag(&fence) {
-                    e.forward_char();
-                    self.buffer.apply_tag(&hidden, &s, &e);
-                }
-            }
+            have.extend(first..=last);
             if end.is_end() {
                 break;
             }
             it = end;
+        }
+        for &l in have.difference(&want) {
+            let (s, mut e) = self.line_bounds(l);
+            e.forward_char();
+            self.buffer.remove_tag(&hidden, &s, &e);
+        }
+        for &l in &want {
+            let (s, mut e) = self.line_bounds(l);
+            e.forward_char();
+            // Already hidden whole: nothing to do (and nothing to redraw).
+            let mut probe = s;
+            if have.contains(&l) && s.has_tag(&hidden) && {
+                probe.forward_to_tag_toggle(Some(&hidden));
+                probe.offset() >= e.offset()
+            } {
+                continue;
+            }
+            self.buffer.apply_tag(&hidden, &s, &e);
         }
     }
 
@@ -2837,7 +2826,7 @@ impl Tab {
         let tg = target.clone();
         drag.connect_drag_begin(move |_, _, y| {
             let Some(t) = me.upgrade() else { return };
-            t.scroll_target.set(None);
+            t.stop_motion();
             let adj = t.scrolled.vadjustment();
             let (k, _) = t.map_frame();
             let band_y = adj.value() * t.map_band_speed();
@@ -3165,31 +3154,8 @@ impl Tab {
             self.overlay.add_overlay(&self.fold_area);
         }
         self.overlay.set_clip_overlay(&tv.root, true);
-        // Touchpad scrolling over a table moves the page (the mouse wheel is
-        // handled by the overlay, smoothly).
-        // Over a table: the wheel scrolls the text, Shift+wheel (or a
-        // sideways swipe) scrolls a wide table sideways.
-        let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::BOTH_AXES);
-        scroll.set_propagation_phase(gtk::PropagationPhase::Capture);
-        let adj = self.scrolled.vadjustment();
-        let hadj = tv.scroller.hadjustment();
-        scroll.connect_scroll(move |c, dx, dy| {
-            let wheel = c.unit() == gdk::ScrollUnit::Wheel;
-            let shift = c.current_event_state().contains(gdk::ModifierType::SHIFT_MASK);
-            let (sx, sy) = if shift { (dx + dy, 0.0) } else { (dx, dy) };
-            if sx != 0.0 {
-                let step = if wheel { hadj.page_size().powf(2.0 / 3.0) } else { 1.0 };
-                let max = (hadj.upper() - hadj.page_size()).max(hadj.lower());
-                hadj.set_value((hadj.value() + sx * step).clamp(hadj.lower(), max));
-            }
-            if sy != 0.0 {
-                let step = if wheel { adj.page_size().powf(2.0 / 3.0) } else { 1.0 };
-                let max = (adj.upper() - adj.page_size()).max(adj.lower());
-                adj.set_value((adj.value() + sy * step).clamp(adj.lower(), max));
-            }
-            glib::Propagation::Stop
-        });
-        tv.root.add_controller(scroll);
+        // Scrolling over a table (the page, or the table sideways) is
+        // handled by the overlay: see `smooth.rs`.
         tv.set_scrolling(self.auto.get().is_some());
         self.tables.borrow_mut().push(TableSlot { anchor, view: tv.clone(), placeholder, width: Cell::new(1) });
         self.schedule_table_sync();
@@ -3482,7 +3448,7 @@ impl Tab {
                 y
             }
         };
-        self.scroll_target.set(None);
+        self.stop_motion();
         adj.set_value((y - adj.page_size() / 3.0).clamp(adj.lower(), (adj.upper() - adj.page_size()).max(adj.lower())));
     }
 

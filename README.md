@@ -115,7 +115,8 @@ tag; the `release.yml` workflow builds the binary and creates the release.
 Syntax disappears as soon as it is complete: `# ` `## ` `### ` headings,
 `- ` bullets, `1. ` numbered list, `[] ` checkbox, `> ` quote,
 ` ``` ` + Enter code block, `**bold**`, `*italic*`, `~~strikethrough~~`,
-`` `code` ``, `[text](url)`, bare URLs.
+`` `code` ``, `[text](url)`, bare URLs. A code block naming its language
+(` ```rust `, ` ```py `, ` ```sh `…) is highlighted in the theme's colours.
 
 Tables: `| a | b |`, Enter, `|---|---|`, Enter (or the ▦ button,
 Ctrl+Alt+T). Drag across cells (or Shift+click, Shift+arrows) to select

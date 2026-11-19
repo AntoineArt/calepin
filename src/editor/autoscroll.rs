@@ -147,7 +147,7 @@ impl Tab {
     }
 
     fn start_autoscroll(&self, x: f64, y: f64) {
-        self.scroll_target.set(None);
+        self.stop_motion();
         let clock = self.overlay.frame_clock().map_or(0, |c| c.frame_time());
         // The table under the anchor, if it is wider than its room.
         let table = self.tables.borrow().iter().find_map(|slot| {
