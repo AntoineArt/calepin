@@ -27,6 +27,11 @@
   <url type="bugtracker">https://github.com/AntoineArt/calepin/issues</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.4.8" date="2026-11-19">
+      <description>
+        <p>The touchpad scrolls as in a web browser: same speed and same long inertia, identical over the text and over tables, instead of GTK's much slower and shorter ones. A new "Touchpad scroll speed" setting in the right-click menu offers slower speeds, down to GTK's. The mouse wheel is unchanged.</p>
+      </description>
+    </release>
     <release version="0.4.7" date="2026-11-19">
       <description>
         <p>Notes restored at start-up show their text again: under GTK's GPU renderers the text of a restored tab could stay blank. Scrolling over the text is GTK's own again, as in every other application (speed and inertia follow the system); over tables the page moves with the same steps and inertia.</p>
