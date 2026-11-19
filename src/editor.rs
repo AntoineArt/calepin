@@ -133,6 +133,10 @@ pub struct Tab {
     /// and text) coloured by the last pass.
     code_hl_pending: RefCell<Option<glib::SourceId>>,
     code_hl_done: RefCell<std::collections::HashSet<u64>>,
+    /// The theme changed: the next pass drops the old colours first.
+    code_hl_reset: Cell<bool>,
+    /// A pass is due once the tab shows.
+    code_hl_on_map: Cell<bool>,
     /// The pointer over the text (view coordinates), and whether Ctrl is
     /// held: what the pointer shape depends on.
     pointer: Cell<Option<(f64, f64)>>,
@@ -155,14 +159,11 @@ pub struct Tab {
     /// Set while a CSV file is shown as a table.
     pub csv: RefCell<Option<crate::csv::Sheet>>,
     me: RefCell<std::rc::Weak<Tab>>,
-    /// Smooth scrolling (see `smooth.rs`): where a wheel animation is
-    /// heading, the speed of a touchpad fling (px/s), whether a frame
-    /// callback runs, the last frame's time, the value it left.
-    scroll_target: Cell<Option<f64>>,
+    /// A touchpad fling over a table (see `smooth.rs`): its speed (px/s),
+    /// whether a frame callback runs, the last frame's time.
     scroll_vel: Cell<f64>,
     scroll_ticking: Cell<bool>,
     scroll_clock: Cell<i64>,
-    scroll_set: Cell<f64>,
     zoom_acc: Cell<f64>,
     on_zoom: RefCell<Option<ZoomCallback>>,
 }
@@ -311,6 +312,8 @@ impl Tab {
             fences_pending: Cell::new(false),
             code_hl_pending: RefCell::new(None),
             code_hl_done: RefCell::new(Default::default()),
+            code_hl_reset: Cell::new(false),
+            code_hl_on_map: Cell::new(false),
             pointer: Cell::new(None),
             ctrl: Cell::new(false),
             line_numbers: sourceview5::GutterRendererText::new(),
@@ -326,11 +329,9 @@ impl Tab {
             readonly: Cell::new(false),
             csv: RefCell::new(None),
             me: RefCell::new(std::rc::Weak::new()),
-            scroll_target: Cell::new(None),
             scroll_vel: Cell::new(0.0),
             scroll_ticking: Cell::new(false),
             scroll_clock: Cell::new(0),
-            scroll_set: Cell::new(0.0),
             zoom_acc: Cell::new(0.0),
             on_zoom: RefCell::new(None),
         });
@@ -338,6 +339,7 @@ impl Tab {
         tab.apply_theme(theme, scheme);
         tab.connect_signals();
         tab.connect_folding();
+        tab.connect_code_hl();
         tab.connect_autoscroll();
         // Right-click menu: what the middle click does.
         let menu = gio::Menu::new();
@@ -655,8 +657,8 @@ impl Tab {
             });
         }
 
-        // Wheel and touchpad scrolling, Ctrl+wheel zoom, over the text and
-        // the tables drawn in the overlay.
+        // Ctrl+wheel zoom, and scrolling over the tables drawn in the overlay
+        // (over the text, GTK scrolls).
         self.connect_smooth_scroll();
 
         self.connect_minimap();

@@ -61,9 +61,33 @@ fn fence_language(fence: &str) -> Option<sourceview5::Language> {
 }
 
 impl Tab {
+    /// Highlighting waits for the tab to be on screen, then for the window
+    /// to have settled: a tab just created (start-up, session restore) must
+    /// not be kept busy. A busy main loop in a tab's first ~150 ms left its
+    /// text view blank for good under GTK's GPU renderers.
+    pub(super) fn connect_code_hl(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        self.view.connect_map(move |_| {
+            let Some(t) = weak.upgrade() else { return };
+            if !t.code_hl_on_map.replace(false) {
+                return;
+            }
+            let w = Rc::downgrade(&t);
+            glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
+                if let Some(t) = w.upgrade() {
+                    t.schedule_code_hl();
+                }
+            });
+        });
+    }
+
     /// Highlights the code blocks shortly after the text changed (once per
-    /// burst of typing).
+    /// burst of typing), or once the tab shows.
     pub(super) fn schedule_code_hl(&self) {
+        if !self.view.is_mapped() {
+            self.code_hl_on_map.set(true);
+            return;
+        }
         if let Some(id) = self.code_hl_pending.borrow_mut().take() {
             id.remove();
         }
@@ -77,16 +101,17 @@ impl Tab {
         *self.code_hl_pending.borrow_mut() = Some(id);
     }
 
-    /// The theme changed: every block is coloured again.
+    /// The theme changed: every block is coloured again. The old colours go
+    /// in the next pass, not here (the theme may change while GTK lays out
+    /// or draws the text).
     pub(super) fn reset_code_hl(&self) {
+        self.code_hl_reset.set(true);
+        self.schedule_code_hl();
+    }
+
+    fn drop_old_colours(&self) {
         let table = self.buffer.tag_table();
-        let mut old = Vec::new();
-        table.foreach(|t| {
-            if t.name().is_some_and(|n| n.starts_with(SYN_PREFIX)) {
-                old.push(t.clone());
-            }
-        });
-        for t in old {
+        for t in self.syn_tags() {
             table.remove(&t);
         }
         if let Some(t) = self.tag(SYN) {
@@ -94,7 +119,6 @@ impl Tab {
             self.buffer.remove_tag(&t, &s, &e);
         }
         self.code_hl_done.borrow_mut().clear();
-        self.schedule_code_hl();
     }
 
     fn syn_tags(&self) -> Vec<gtk::TextTag> {
@@ -162,6 +186,9 @@ impl Tab {
     }
 
     pub(super) fn highlight_code(&self) {
+        if self.code_hl_reset.replace(false) {
+            self.drop_old_colours();
+        }
         let table = self.buffer.tag_table();
         let syn = match self.tag(SYN) {
             Some(t) => t,
