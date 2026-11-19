@@ -51,9 +51,16 @@ pub struct Session {
     /// Middle click: fast scrolling (true) or paste.
     #[serde(default = "yes")]
     pub middle_scroll: bool,
+    /// Page pixels per unit of touchpad travel.
+    #[serde(default = "default_touchpad")]
+    pub touchpad_speed: f64,
     /// Tabs of detached windows, by window.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub detached: Vec<Vec<TabState>>,
+}
+
+fn default_touchpad() -> f64 {
+    crate::editor::DEFAULT_TOUCHPAD_SPEED
 }
 
 fn default_size() -> f64 {
@@ -70,6 +77,7 @@ impl Default for Session {
             toolbar: true,
             font_size: default_size(),
             middle_scroll: true,
+            touchpad_speed: default_touchpad(),
             detached: Vec::new(),
         }
     }

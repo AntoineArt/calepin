@@ -19,6 +19,7 @@ mod folding;
 mod smooth;
 
 pub use autoscroll::set_middle_scroll;
+pub use smooth::{DEFAULT_TOUCHPAD_SPEED, TOUCHPAD_SPEEDS, set_touchpad_speed};
 
 /// Longest list prefix (indent, marker, space) given a hanging indent.
 const MAX_HANG: i32 = 24;
@@ -159,7 +160,7 @@ pub struct Tab {
     /// Set while a CSV file is shown as a table.
     pub csv: RefCell<Option<crate::csv::Sheet>>,
     me: RefCell<std::rc::Weak<Tab>>,
-    /// A touchpad fling over a table (see `smooth.rs`): its speed (px/s),
+    /// A touchpad fling (see `smooth.rs`): its speed (px/s),
     /// whether a frame callback runs, the last frame's time.
     scroll_vel: Cell<f64>,
     scroll_ticking: Cell<bool>,
@@ -341,9 +342,17 @@ impl Tab {
         tab.connect_folding();
         tab.connect_code_hl();
         tab.connect_autoscroll();
-        // Right-click menu: what the middle click does.
+        // Right-click menu: what the middle click does, how fast the
+        // touchpad scrolls.
         let menu = gio::Menu::new();
         menu.append(Some(crate::i18n::tr("Middle click: fast scroll")), Some("win.middle-scroll"));
+        let speeds = gio::Menu::new();
+        for (label, px) in TOUCHPAD_SPEEDS {
+            let item = gio::MenuItem::new(Some(crate::i18n::tr(label)), None);
+            item.set_action_and_target_value(Some("win.touchpad-speed"), Some(&px.to_variant()));
+            speeds.append_item(&item);
+        }
+        menu.append_submenu(Some(crate::i18n::tr("Touchpad scroll speed")), &speeds);
         tab.view.set_extra_menu(Some(&menu));
         tab
     }
@@ -657,8 +666,8 @@ impl Tab {
             });
         }
 
-        // Ctrl+wheel zoom, and scrolling over the tables drawn in the overlay
-        // (over the text, GTK scrolls).
+        // Wheel and touchpad scrolling with GTK's numbers, over the text and
+        // the tables drawn in the overlay; Ctrl+wheel zoom.
         self.connect_smooth_scroll();
 
         self.connect_minimap();

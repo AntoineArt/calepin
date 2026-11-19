@@ -72,6 +72,9 @@ tag; the `release.yml` workflow builds the binary and creates the release.
   anywhere or Escape to stop; or hold the button). Over a table wider than
   its room, moving sideways scrolls the table sideways. Right-click → "Middle click:
   fast scroll" turns it off, and the middle click pastes again.
+- Touchpad: the page moves and keeps its momentum as in a web browser
+  (Chromium's numbers), over the text and over tables alike. Right-click →
+  "Touchpad scroll speed" picks a slower one, down to GTK's own.
 - Closing the window only hides it: the process stays resident so it shows up
   instantly next time. Ctrl+Q really quits.
 - Every tab is saved continuously (`~/.local/state/calepin/`), even a note

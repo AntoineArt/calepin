@@ -395,6 +395,7 @@ impl Window {
         w.setup_shortcuts();
         w.setup_drop();
         w.setup_middle_click();
+        w.setup_touchpad_speed();
 
         let weak = Rc::downgrade(&w);
         new_btn.connect_clicked(move |_| {
@@ -1509,6 +1510,25 @@ impl Window {
             crate::editor::set_middle_scroll(on);
             if let Some(w) = weak.upgrade() {
                 w.session.borrow_mut().middle_scroll = on;
+                w.save_session();
+            }
+        });
+        self.win.add_action(&action);
+    }
+
+    /// "win.touchpad-speed", the right-click menu's radio items: how far
+    /// the touchpad moves the page, kept in the session.
+    fn setup_touchpad_speed(self: &Rc<Self>) {
+        let px = self.session.borrow().touchpad_speed;
+        crate::editor::set_touchpad_speed(px);
+        let action = gio::SimpleAction::new_stateful("touchpad-speed", Some(glib::VariantTy::DOUBLE), &px.to_variant());
+        let weak = Rc::downgrade(self);
+        action.connect_activate(move |a, v| {
+            let Some(px) = v.and_then(|v| v.get::<f64>()) else { return };
+            a.set_state(&px.to_variant());
+            crate::editor::set_touchpad_speed(px);
+            if let Some(w) = weak.upgrade() {
+                w.session.borrow_mut().touchpad_speed = px;
                 w.save_session();
             }
         });
