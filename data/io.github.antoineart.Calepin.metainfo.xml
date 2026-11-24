@@ -27,6 +27,11 @@
   <url type="bugtracker">https://github.com/AntoineArt/calepin/issues</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.4.9" date="2026-11-24">
+      <description>
+        <p>Images in Markdown notes: ![alt](path) shows the picture in the text, scaled to the column. Insert one with the image button (Ctrl+Alt+I), by dropping image files on the text, or by pasting a picture such as a screenshot, which is saved next to the note. Drag an image's right edge to resize it; the width is kept in the file as {width=300px}. Ctrl+click opens an image.</p>
+      </description>
+    </release>
     <release version="0.4.8" date="2026-11-19">
       <description>
         <p>The touchpad scrolls as in a web browser: same speed and same long inertia, identical over the text and over tables, instead of GTK's much slower and shorter ones. A new "Touchpad scroll speed" setting in the right-click menu offers slower speeds, down to GTK's. The mouse wheel is unchanged.</p>
