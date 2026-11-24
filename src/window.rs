@@ -1252,10 +1252,22 @@ fn file_drop_target() -> gtk::DropTarget {
     {
         let drop = gtk::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
         drop.set_propagation_phase(gtk::PropagationPhase::Capture);
-        drop.connect_drop(move |d, value, _, _| {
+        drop.connect_drop(move |d, value, x, y| {
             let root = d.widget().and_then(|w| w.root());
             let w = all_windows().into_iter().find(|w| root.as_ref().is_some_and(|r| r.upcast_ref::<gtk::Widget>() == w.win.upcast_ref::<gtk::Widget>()));
             let (Some(w), Ok(list)) = (w, value.get::<gdk::FileList>()) else { return false };
+            // Images dropped on a Markdown note's text go into the note.
+            let paths: Vec<PathBuf> = list.files().iter().filter_map(|f| f.path()).collect();
+            if !paths.is_empty()
+                && paths.iter().all(|p| crate::editor::is_image_path(p))
+                && let Some(tab) = w.formattable_tab()
+                && let Some(widget) = d.widget()
+                && let Some(p) = widget.compute_point(&tab.view, &gtk::graphene::Point::new(x as f32, y as f32))
+                && tab.view.contains(p.x() as f64, p.y() as f64)
+            {
+                tab.drop_image_files(&paths, p.x() as f64, p.y() as f64);
+                return true;
+            }
             for f in list.files() {
                 if let Some(p) = f.path() {
                     w.open_path(&p);
@@ -1358,6 +1370,7 @@ impl Window {
             Some(("❝", "Quote (Ctrl+Alt+Q)", false, |w| w.block(BlockCmd::Quote))),
             Some(("{ }", "Code block (Ctrl+Alt+8)", false, |w| w.block(BlockCmd::Code))),
             Some(("▦", "Table (Ctrl+Alt+T)", false, |w| w.table())),
+            Some(("🖼", "Image (Ctrl+Alt+I)", false, |w| w.image())),
             None,
             Some(("T̶x", "Clear formatting (Ctrl+\\)", false, |w| w.clear())),
         ];
@@ -1413,6 +1426,12 @@ impl Window {
     fn table(&self) {
         if let Some(t) = self.formattable_tab() {
             t.insert_table();
+        }
+    }
+
+    fn image(&self) {
+        if let Some(t) = self.formattable_tab() {
+            t.choose_images();
         }
     }
 
@@ -1880,6 +1899,7 @@ impl Window {
         add(&["<Control><Alt>6"], Rc::new(|w| w.block(BlockCmd::Numbered)));
         add(&["<Control><Alt>8"], Rc::new(|w| w.block(BlockCmd::Code)));
         add(&["<Control><Alt>t"], Rc::new(|w| w.table()));
+        add(&["<Control><Alt>i"], Rc::new(|w| w.image()));
         add(&["<Control><Alt>q"], Rc::new(|w| w.block(BlockCmd::Quote)));
         add(&["<Control><Shift>v"], Rc::new(|w| {
             if let Some(t) = w.active_tab() {

@@ -16,9 +16,11 @@ use crate::theme::Theme;
 mod autoscroll;
 mod codehl;
 mod folding;
+mod images;
 mod smooth;
 
 pub use autoscroll::set_middle_scroll;
+pub use images::is_image_path;
 pub use smooth::{DEFAULT_TOUCHPAD_SPEED, TOUCHPAD_SPEEDS, set_touchpad_speed};
 
 /// Longest list prefix (indent, marker, space) given a hanging indent.
@@ -27,6 +29,8 @@ const INLINE: [&str; 4] = ["b", "i", "s", "code"];
 const BLOCKS: [&str; 9] = ["h1", "h2", "h3", "h4", "h5", "h6", "quote", "codeblock", "fence"];
 const MARKERS: [char; 3] = ['-', '*', '+'];
 const LINK: &str = "link:";
+/// Tag of an image's character: `img:` alt U+001F src.
+const IMG: &str = "img:";
 const BULLET: char = '•';
 const UNCHECKED: char = '☐';
 const CHECKED: char = '☑';
@@ -95,6 +99,12 @@ pub struct Tab {
     margin: Cell<i32>,
     /// Embedded tables and their anchors in the buffer.
     tables: RefCell<Vec<TableSlot>>,
+    /// The images shown in the text (see `images.rs`).
+    images: RefCell<Vec<glib::WeakRef<images::ImagePaintable>>>,
+    /// The image whose resize handle shows, and the drag under way (the
+    /// image's offset, its width when the drag began).
+    image_hover: RefCell<Option<images::ImagePaintable>>,
+    image_drag: RefCell<Option<(i32, images::ImagePaintable, i32)>>,
     /// Tables are drawn in this overlay, above placeholders in the text: a
     /// widget inside a GtkTextView never receives text from input methods.
     overlay: gtk::Overlay,
@@ -290,6 +300,9 @@ impl Tab {
             on_change: RefCell::new(None),
             margin: Cell::new(-1),
             tables: RefCell::new(Vec::new()),
+            images: RefCell::new(Vec::new()),
+            image_hover: RefCell::new(None),
+            image_drag: RefCell::new(None),
             overlay,
             sync_pending: Cell::new(false),
             margin_pending: Cell::new(false),
@@ -506,6 +519,14 @@ impl Tab {
         };
         self.set_margin(m);
         self.schedule_table_sync();
+        let w = self.image_width();
+        self.images.borrow_mut().retain(|i| match i.upgrade() {
+            Some(p) => {
+                p.set_max_width(w);
+                true
+            }
+            None => false,
+        });
     }
 
     fn connect_signals(self: &Rc<Self>) {
@@ -580,6 +601,7 @@ impl Tab {
                 && (*mark == b.get_insert() || *mark == b.selection_bound())
             {
                 t.update_table_selection();
+                t.update_image_selection();
             }
         });
         let weak = Rc::downgrade(self);
@@ -754,12 +776,58 @@ impl Tab {
                 launch_uri(&url);
                 return;
             }
+            if ctrl && let Some(img) = t.image_at(&iter) {
+                g.set_state(gtk::EventSequenceState::Claimed);
+                t.open_image(&img);
+                return;
+            }
             if t.is_checkbox(&iter) {
                 g.set_state(gtk::EventSequenceState::Claimed);
                 t.toggle_checkbox(iter.offset());
             }
         });
         self.view.add_controller(click);
+
+        // Dragging an image's right edge resizes it.
+        let drag = gtk::GestureDrag::new();
+        drag.set_propagation_phase(gtk::PropagationPhase::Capture);
+        drag.set_button(gdk::BUTTON_PRIMARY);
+        let weak = Rc::downgrade(self);
+        drag.connect_drag_begin(move |g, x, y| {
+            let Some(t) = weak.upgrade() else { return };
+            match t.image_edge_at(x, y) {
+                Some((off, p)) => {
+                    g.set_state(gtk::EventSequenceState::Claimed);
+                    t.checkpoint();
+                    let w = p.shown_width().unwrap_or(1);
+                    p.set_handle(true);
+                    *t.image_drag.borrow_mut() = Some((off, p, w));
+                    t.update_pointer();
+                }
+                None => {
+                    g.set_state(gtk::EventSequenceState::Denied);
+                }
+            }
+        });
+        let weak = Rc::downgrade(self);
+        drag.connect_drag_update(move |_, dx, _| {
+            let Some(t) = weak.upgrade() else { return };
+            if let Some((_, p, w0)) = t.image_drag.borrow().as_ref() {
+                let w = (*w0 as f64 + dx).round().clamp(24.0, p.max_width() as f64);
+                p.set_width(Some(model::Width::Px(w)));
+            }
+        });
+        let weak = Rc::downgrade(self);
+        drag.connect_drag_end(move |_, _, _| {
+            let Some(t) = weak.upgrade() else { return };
+            let Some((off, p, w0)) = t.image_drag.borrow_mut().take() else { return };
+            let w = p.shown_width().unwrap_or(w0);
+            if w != w0 {
+                t.resize_image(off, &p, w);
+            }
+            t.update_pointer();
+        });
+        self.view.add_controller(drag);
 
         // The pointer shape follows the pointer, and Ctrl (links).
         let motion = gtk::EventControllerMotion::new();
@@ -828,8 +896,24 @@ impl Tab {
     /// (fold arrows and "⋯", checkboxes, links with Ctrl), the text cursor
     /// otherwise.
     pub(super) fn update_pointer(&self) {
+        let edge = if self.auto.get().is_none() && self.image_drag.borrow().is_none() {
+            self.pointer.get().and_then(|(x, y)| self.image_edge_at(x, y)).map(|(_, p)| p)
+        } else {
+            None
+        };
+        let old = self.image_hover.replace(edge.clone());
+        if old != edge {
+            if let Some(o) = old {
+                o.set_handle(false);
+            }
+            if let Some(e) = &edge {
+                e.set_handle(true);
+            }
+        }
         let name = if self.auto.get().is_some() {
             pointer::SCROLL
+        } else if edge.is_some() || self.image_drag.borrow().is_some() {
+            pointer::IMG_RESIZE
         } else if self.pointer.get().is_some_and(|(x, y)| self.clickable_at(x, y)) {
             pointer::HAND
         } else {
@@ -843,7 +927,33 @@ impl Tab {
             return true;
         }
         self.markdown.get()
-            && self.iter_at_point(x, y).is_some_and(|it| self.is_checkbox(&it) || (self.ctrl.get() && self.link_at(&it).is_some()))
+            && self.iter_at_point(x, y).is_some_and(|it| self.is_checkbox(&it) || (self.ctrl.get() && (self.link_at(&it).is_some() || it.paintable().is_some())))
+    }
+
+    /// The image whose right edge (its resize handle) is under the pointer:
+    /// its offset and picture.
+    fn image_edge_at(&self, x: f64, y: f64) -> Option<(i32, images::ImagePaintable)> {
+        if !self.formatting() || self.readonly.get() || self.images.borrow().is_empty() {
+            return None;
+        }
+        let (bx, by) = self.view.window_to_buffer_coords(gtk::TextWindowType::Widget, x as i32, y as i32);
+        let it = self.view.iter_at_location(bx, by)?;
+        let mut prev = it;
+        prev.backward_char();
+        for cand in [it, prev] {
+            let Some(p) = cand.paintable().and_downcast::<images::ImagePaintable>() else { continue };
+            let Some(w) = p.shown_width() else { continue };
+            let rect = self.view.iter_location(&cand);
+            let right = rect.x() + w;
+            // The picture sits on the line's baseline: the bottom of its box.
+            let (_, line_h) = self.view.line_yrange(&cand);
+            let bottom = rect.y() + line_h;
+            let h = p.intrinsic_height();
+            if (right - 14..=right + 4).contains(&bx) && (bottom - h - 8..=bottom).contains(&by) {
+                return Some((cand.offset(), p));
+            }
+        }
+        None
     }
 
     fn iter_at_point(&self, x: f64, y: f64) -> Option<gtk::TextIter> {
@@ -1485,7 +1595,22 @@ impl Tab {
                     return;
                 }
                 let Some(o) = (0..p - 1).rev().find(|&k| t[k] == '[') else { return };
-                if o + 1 >= p - 1 || (o > 0 && t[o - 1] == '!') || code_in(o, n) {
+                if o > 0 && t[o - 1] == '!' && !code_in(o - 1, n) {
+                    // ![alt](src): the Markdown becomes the picture.
+                    if let Some((img, end)) = model::match_image(&t, o - 1)
+                        && end == n
+                    {
+                        let at = base + o as i32 - 1;
+                        self.delete_range(at, base + n as i32);
+                        let mut it = self.buffer.iter_at_offset(at);
+                        let tag = self.image_tag(&img);
+                        self.insert_image_char(&mut it, &img);
+                        self.buffer.apply_tag(&tag, &self.buffer.iter_at_offset(at), &it);
+                        self.buffer.place_cursor(&it);
+                    }
+                    return;
+                }
+                if o + 1 >= p - 1 || code_in(o, n) {
                     return;
                 }
                 let url: String = t[p + 1..n - 1].iter().collect();
@@ -2098,6 +2223,9 @@ impl Tab {
                 "s" => st.strike = true,
                 "code" => st.code = true,
                 n if n.starts_with(LINK) => st.link = Some(n[LINK.len()..].to_string()),
+                n if n.starts_with(IMG) && it.paintable().is_some() => {
+                    st.image = Some(model::Image::decode(&n[IMG.len()..]));
+                }
                 _ => {}
             }
         }
@@ -2113,10 +2241,18 @@ impl Tab {
             if next.offset() > b || next.offset() <= it.offset() {
                 next = self.buffer.iter_at_offset(b);
             }
-            let text = self.buffer.text(&it, &next, true).to_string();
+            // An image is one character (that `text` leaves out): images
+            // side by side stay apart.
+            let text = if it.paintable().is_some() {
+                next = it;
+                next.forward_char();
+                model::OBJECT.to_string()
+            } else {
+                self.buffer.text(&it, &next, true).to_string()
+            };
             let style = self.style_at(&it);
             match out.last_mut() {
-                Some(last) if last.style == style => last.text.push_str(&text),
+                Some(last) if last.style == style && style.image.is_none() => last.text.push_str(&text),
                 _ => out.push(Span { text, style }),
             }
             it = next;
@@ -2157,7 +2293,7 @@ impl Tab {
         };
         let mut spans = self.spans(start, end);
         for sp in spans.iter_mut() {
-            if sp.text.contains('\u{fffc}') {
+            if sp.style.image.is_none() && sp.text.contains('\u{fffc}') {
                 sp.text = sp.text.replace('\u{fffc}', "");
             }
         }
@@ -2222,6 +2358,16 @@ impl Tab {
                 }
                 if let Some(u) = &st.link {
                     names.push(self.link_tag(u).name().unwrap_or_default().to_string());
+                }
+                if let Some(img) = &st.image {
+                    names.push(self.image_tag(img).name().unwrap_or_default().to_string());
+                    let start = it.offset();
+                    self.insert_image_char(it, img);
+                    let s = self.buffer.iter_at_offset(start);
+                    for n in &names {
+                        self.buffer.apply_tag_by_name(n, &s, it);
+                    }
+                    continue;
                 }
                 let refs: Vec<&str> = names.iter().map(String::as_str).collect();
                 self.buffer.insert_with_tags_by_name(it, &span.text, &refs);
@@ -2473,6 +2619,13 @@ impl Tab {
         let clipboard = self.view.clipboard();
         let weak = Rc::downgrade(self);
         glib::spawn_future_local(async move {
+            if !raw
+                && let Some(t) = weak.upgrade()
+                && t.formatting()
+                && t.paste_image(&clipboard).await
+            {
+                return;
+            }
             let Ok(Some(text)) = clipboard.read_text_future().await else { return };
             let Some(t) = weak.upgrade() else { return };
             t.insert_text(&text, raw);
@@ -2536,6 +2689,7 @@ impl Tab {
                 e.forward_to_line_end();
             }
             let text = self.buffer.text(&it, &e, false);
+            let text = text.replace(model::OBJECT, "");
             let t = text.trim_start_matches([' ', '\t', BULLET, UNCHECKED, CHECKED]).trim();
             if !t.is_empty() {
                 let s: String = t.chars().take(28).collect();
@@ -2584,6 +2738,174 @@ impl Tab {
 }
 
 impl Tab {
+    /// The widest an image shows: the text column.
+    fn image_width(&self) -> i32 {
+        (self.scrolled.width() - 2 * self.margin.get().max(0) - 8).max(48)
+    }
+
+    /// The folder relative image paths start from: the note's.
+    fn image_base(&self) -> Option<PathBuf> {
+        self.path.borrow().as_deref().and_then(|p| p.parent()).map(PathBuf::from)
+    }
+
+    /// The tag that keeps an image's Markdown on its character.
+    fn image_tag(&self, img: &model::Image) -> gtk::TextTag {
+        let name = format!("{IMG}{}", img.encode());
+        self.tag(&name).unwrap_or_else(|| self.buffer.create_tag(Some(&name), &[]).expect("new tag"))
+    }
+
+    /// Inserts the picture for `img` at `it` (moved past it).
+    fn insert_image_char(&self, it: &mut gtk::TextIter, img: &model::Image) {
+        let base = self.image_base();
+        let p = images::ImagePaintable::new(img, base.as_deref(), &self.view, self.image_width());
+        let off = it.offset();
+        self.buffer.insert_paintable(it, &p);
+        *it = self.buffer.iter_at_offset(off + 1);
+        self.images.borrow_mut().push(p.downgrade());
+    }
+
+    /// The image at `iter`, if one is there.
+    fn image_at(&self, iter: &gtk::TextIter) -> Option<model::Image> {
+        iter.paintable()?;
+        self.style_at(iter).image
+    }
+
+    /// Writes an image's new width into its Markdown (`{width=…px}`).
+    fn resize_image(&self, off: i32, p: &images::ImagePaintable, w: i32) {
+        let s = self.buffer.iter_at_offset(off);
+        let Some(img) = self.image_at(&s) else { return };
+        // As wide as it shows by default (its own width, at most the
+        // column): no attribute.
+        let full = p.natural_width().map(|n| n.min(p.max_width()));
+        let px = if full.is_some_and(|f| w >= f) { None } else { Some(w as u32) };
+        let new = img.with_width(px);
+        p.set_width(new.width());
+        let mut e = s;
+        e.forward_char();
+        self.buffer.remove_tag(&self.image_tag(&img), &s, &e);
+        self.buffer.apply_tag(&self.image_tag(&new), &s, &e);
+        self.checkpoint();
+        self.notify();
+    }
+
+    /// Opens an image (Ctrl+click) in the desktop's viewer.
+    fn open_image(&self, img: &model::Image) {
+        let base = self.image_base();
+        if let Some(src) = images::resolve(&img.location(), base.as_deref()) {
+            launch_uri(&src.uri());
+        }
+    }
+
+    /// Draws as selected the images inside the selection.
+    fn update_image_selection(&self) {
+        let imgs = self.images.borrow();
+        if imgs.is_empty() {
+            return;
+        }
+        let sel = self.buffer.selection_bounds();
+        let mut chosen: Vec<gdk::Paintable> = Vec::new();
+        if let Some((s, e)) = sel {
+            let text = self.buffer.slice(&s, &e, true);
+            let base = s.offset();
+            for (i, c) in text.chars().enumerate() {
+                if c == model::OBJECT
+                    && let Some(p) = self.buffer.iter_at_offset(base + i as i32).paintable()
+                {
+                    chosen.push(p);
+                }
+            }
+        }
+        for w in imgs.iter() {
+            if let Some(p) = w.upgrade() {
+                let on = chosen.iter().any(|c| c == p.upcast_ref::<gdk::Paintable>());
+                p.set_selected(on);
+            }
+        }
+    }
+
+    /// Inserts images for these files at the caret, each on its own line
+    /// when there are several.
+    pub fn insert_image_files(&self, paths: &[PathBuf]) {
+        if !self.formatting() || self.readonly.get() || paths.is_empty() {
+            return;
+        }
+        let base = self.image_base();
+        let md: Vec<String> = paths.iter().map(|p| images::image_for(p, base.as_deref()).markdown()).collect();
+        self.insert_text(&md.join("\n"), false);
+        self.view.grab_focus();
+    }
+
+    /// Images dropped on the text: the caret goes where they fell.
+    pub fn drop_image_files(&self, paths: &[PathBuf], x: f64, y: f64) {
+        let (bx, by) = self.view.window_to_buffer_coords(gtk::TextWindowType::Widget, x as i32, y as i32);
+        if let Some(it) = self.view.iter_at_location(bx, by) {
+            self.buffer.place_cursor(&it);
+        }
+        self.insert_image_files(paths);
+    }
+
+    /// Asks for image files and inserts them (toolbar, Ctrl+Alt+I).
+    pub fn choose_images(self: &Rc<Self>) {
+        if !self.formatting() || self.readonly.get() {
+            return;
+        }
+        let filter = gtk::FileFilter::new();
+        filter.set_name(Some(crate::i18n::tr("Images")));
+        filter.add_pixbuf_formats();
+        for e in images::EXTENSIONS {
+            filter.add_suffix(e);
+        }
+        let filters = gio::ListStore::new::<gtk::FileFilter>();
+        filters.append(&filter);
+        let dialog = gtk::FileDialog::builder().title(crate::i18n::tr("Insert images")).filters(&filters).default_filter(&filter).build();
+        if let Some(dir) = self.image_base() {
+            dialog.set_initial_folder(Some(&gio::File::for_path(dir)));
+        } else if let Some(pics) = glib::user_special_dir(glib::UserDirectory::Pictures) {
+            dialog.set_initial_folder(Some(&gio::File::for_path(pics)));
+        }
+        let win = self.view.root().and_downcast::<gtk::Window>();
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let Ok(files) = dialog.open_multiple_future(win.as_ref()).await else { return };
+            let Some(t) = weak.upgrade() else { return };
+            let paths: Vec<PathBuf> = (0..files.n_items()).filter_map(|i| files.item(i).and_downcast::<gio::File>()?.path()).collect();
+            t.insert_image_files(&paths);
+        });
+    }
+
+    /// A picture on the clipboard (a screenshot): saved as PNG beside the
+    /// note, then inserted. False when the clipboard holds none.
+    async fn paste_image(&self, clipboard: &gdk::Clipboard) -> bool {
+        // Other apps' clipboards list MIME types: the types GDK reads them as.
+        let formats = clipboard.formats().union_deserialize_types();
+        if formats.contains_type(gdk::FileList::static_type()) {
+            if let Ok(v) = clipboard.read_value_future(gdk::FileList::static_type(), glib::Priority::DEFAULT).await
+                && let Ok(list) = v.get::<gdk::FileList>()
+            {
+                let paths: Vec<PathBuf> = list.files().iter().filter_map(|f| f.path()).collect();
+                if !paths.is_empty() && paths.iter().all(|p| images::is_image_path(p)) {
+                    self.insert_image_files(&paths);
+                    return true;
+                }
+            }
+            return false;
+        }
+        if !formats.contains_type(gdk::Texture::static_type()) || formats.contain_mime_type("text/plain;charset=utf-8") {
+            return false;
+        }
+        let Ok(Some(tex)) = clipboard.read_texture_future().await else { return false };
+        match images::save_pasted(&tex, self.image_base().as_deref()) {
+            Ok(path) => {
+                self.insert_image_files(&[path]);
+                true
+            }
+            Err(e) => {
+                eprintln!("calepin: cannot save the pasted image: {e}");
+                false
+            }
+        }
+    }
+
     /// The table anchor on `line`, if any.
     fn line_anchor(&self, line: i32) -> Option<(i32, gtk::TextChildAnchor)> {
         if self.tables.borrow().is_empty() && self.graveyard.borrow().is_empty() {
@@ -3264,7 +3586,7 @@ impl Tab {
         let mut offsets = Vec::new();
         let mut it = self.buffer.start_iter();
         loop {
-            if it.char() == '\u{fffc}' && it.child_anchor().is_none() {
+            if it.char() == '\u{fffc}' && it.child_anchor().is_none() && it.paintable().is_none() {
                 offsets.push(it.offset());
             }
             if !it.forward_char() {

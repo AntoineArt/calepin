@@ -121,6 +121,17 @@ Syntax disappears as soon as it is complete: `# ` `## ` `### ` headings,
 `` `code` ``, `[text](url)`, bare URLs. A code block naming its language
 (` ```rust `, ` ```py `, ` ```sh `…) is highlighted in the theme's colours.
 
+Images: `![alt](path)` shows the picture in the text, scaled down to the
+column (a path relative to the note, absolute, `~/…`, or an `http(s)://`
+address). Insert one with the 🖼 button (Ctrl+Alt+I), by dropping image files
+on the text, or by pasting: a copied picture (a screenshot) is saved as PNG in
+`images/` next to the note (in `~/.local/share/calepin/images/` for a note
+never saved to a file), and the note links to it. Drag an image's right
+edge to resize it: the width is written as a Pandoc attribute,
+`![alt](path){width=300px}` (`{width=50%}`, a share of the column, is read
+too); dragging back to full size removes it. Ctrl+click opens an image; the
+Markdown stays as written.
+
 Tables: `| a | b |`, Enter, `|---|---|`, Enter (or the ▦ button,
 Ctrl+Alt+T). Drag across cells (or Shift+click, Shift+arrows) to select
 several: Ctrl+C copies them as tab-separated text, Ctrl+X and Delete clear
@@ -148,6 +159,7 @@ a restart.
 | Text, headings 1-3 | Ctrl+Alt+0, Ctrl+Alt+1..3 |
 | Checkbox, bullets, numbers, code, quote | Ctrl+Alt+4, 5, 6, 8, Ctrl+Alt+Q |
 | Table | Ctrl+Alt+T |
+| Image | Ctrl+Alt+I |
 | Clear formatting | Ctrl+\ |
 | Undo, redo | Ctrl+Z, Ctrl+Shift+Z (or Ctrl+Y) |
 | New tab, close, reopen | Ctrl+T (or Ctrl+N), Ctrl+W, Ctrl+Shift+T |

@@ -71,6 +71,8 @@ fn small_button(label: &str, tip: &str) -> gtk::Button {
 }
 
 const LINK: &str = "link:";
+/// A cell shows an image as its Markdown, under this tag (alt U+001F src).
+const IMG: &str = "img:";
 
 /// Colours for rendered Markdown in cells: code text, code background,
 /// links, search hit, current hit (background, text).
@@ -122,11 +124,18 @@ fn render_cell(b: &gtk::TextBuffer, md: &str, colors: &CellColors) {
         if let Some(u) = &st.link {
             names.push(format!("{LINK}{u}"));
         }
+        let text = match &st.image {
+            Some(img) => {
+                names.push(format!("{IMG}{}", img.encode()));
+                img.markdown()
+            }
+            None => span.text.clone(),
+        };
         for n in &names {
             ensure_tag(b, n, colors);
         }
         let refs: Vec<&str> = names.iter().map(String::as_str).collect();
-        b.insert_with_tags_by_name(&mut it, &span.text, &refs);
+        b.insert_with_tags_by_name(&mut it, &text, &refs);
     }
 }
 
@@ -188,6 +197,9 @@ fn style_at(it: &gtk::TextIter) -> Style {
             Some("s") => st.strike = true,
             Some("code") => st.code = true,
             Some(n) if n.starts_with(LINK) => st.link = Some(n[LINK.len()..].to_string()),
+            Some(n) if n.starts_with(IMG) => {
+                st.image = Some(model::Image::decode(&n[IMG.len()..]));
+            }
             _ => {}
         }
     }
@@ -204,9 +216,13 @@ fn cell_markdown(b: &gtk::TextBuffer) -> String {
             next = b.end_iter();
         }
         let text = b.text(&it, &next, false).replace('\n', " ");
-        let style = style_at(&it);
+        let mut style = style_at(&it);
+        // An image's Markdown edited by hand is text again.
+        if style.image.as_ref().is_some_and(|img| img.markdown() != text) {
+            style.image = None;
+        }
         match spans.last_mut() {
-            Some(l) if l.style == style => l.text.push_str(&text),
+            Some(l) if l.style == style && style.image.is_none() => l.text.push_str(&text),
             _ => spans.push(Span { text, style }),
         }
         it = next;
@@ -1188,7 +1204,7 @@ impl TableView {
     /// The selected cells as tab-separated text (rows on lines).
     fn selection_tsv(&self) -> Option<String> {
         let (r0, c0, r1, c1) = self.sel_rect()?;
-        let plain = |md: String| model::parse_inline(&md).into_iter().map(|s| s.text).collect::<String>();
+        let plain = |md: String| model::plain_text(&model::parse_inline(&md));
         Some((r0..=r1).map(|r| (c0..=c1).map(|c| plain(self.cell(r, c)).replace(['\t', '\n'], " ")).collect::<Vec<_>>().join("\t")).collect::<Vec<_>>().join("\n"))
     }
 

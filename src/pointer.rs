@@ -11,6 +11,8 @@ pub const HAND: &str = "pointer";
 pub const SCROLL: &str = "all-scroll";
 /// Over a column border that can be dragged.
 pub const COL_RESIZE: &str = "col-resize";
+/// Over an image's resize handle.
+pub const IMG_RESIZE: &str = "ew-resize";
 
 /// The hand over a widget that acts on a click (buttons).
 pub fn clickable<W: IsA<gtk::Widget>>(w: W) -> W {

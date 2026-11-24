@@ -11,6 +11,103 @@ pub struct Style {
     pub strike: bool,
     pub code: bool,
     pub link: Option<String>,
+    /// An image, `![alt](src)`: its span stands for the image (one object
+    /// replacement character in the editor), never for text.
+    pub image: Option<Image>,
+}
+
+/// An image's Markdown, kept as written: `alt` between the brackets, `src`
+/// between the parentheses (with any title), and Pandoc attributes between
+/// the braces that may follow (`{width=300px}`).
+#[derive(Clone, Debug, PartialEq, Eq, Default, Hash)]
+pub struct Image {
+    pub alt: String,
+    pub src: String,
+    pub attrs: Option<String>,
+}
+
+/// An image's width set in its attributes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Width {
+    Px(f64),
+    /// Of the text column.
+    Percent(f64),
+}
+
+/// The character standing for an image in the text.
+pub const OBJECT: char = '\u{fffc}';
+
+impl Image {
+    pub fn markdown(&self) -> String {
+        match &self.attrs {
+            Some(a) => format!("![{}]({}){{{a}}}", self.alt, self.src),
+            None => format!("![{}]({})", self.alt, self.src),
+        }
+    }
+
+    /// The `width=` attribute: `300px`, `300`, or `50%`.
+    pub fn width(&self) -> Option<Width> {
+        let attrs = self.attrs.as_deref()?;
+        let v = attrs.split_whitespace().find_map(|a| a.strip_prefix("width="))?.trim_matches('"');
+        if let Some(p) = v.strip_suffix('%') {
+            p.parse().ok().filter(|p: &f64| *p > 0.0).map(Width::Percent)
+        } else {
+            v.strip_suffix("px").unwrap_or(v).parse().ok().filter(|w: &f64| *w > 0.0).map(Width::Px)
+        }
+    }
+
+    /// The same image `px` wide (other attributes kept); `None` drops the
+    /// width.
+    pub fn with_width(&self, px: Option<u32>) -> Image {
+        let mut parts: Vec<String> = self
+            .attrs
+            .as_deref()
+            .unwrap_or("")
+            .split_whitespace()
+            .filter(|a| !a.starts_with("width=") && !a.starts_with("height="))
+            .map(str::to_string)
+            .collect();
+        if let Some(px) = px {
+            parts.push(format!("width={px}px"));
+        }
+        let attrs = (!parts.is_empty()).then(|| parts.join(" "));
+        Image { attrs, ..self.clone() }
+    }
+
+    /// Packed in one string (a text tag's name), and back.
+    pub fn encode(&self) -> String {
+        format!("{}\u{1f}{}\u{1f}{}", self.alt, self.src, self.attrs.as_deref().map_or(String::new(), |a| format!("{{{a}")))
+    }
+
+    pub fn decode(s: &str) -> Image {
+        let mut it = s.splitn(3, '\u{1f}');
+        let alt = it.next().unwrap_or("").to_string();
+        let src = it.next().unwrap_or("").to_string();
+        let attrs = it.next().and_then(|a| a.strip_prefix('{')).map(str::to_string);
+        Image { alt, src, attrs }
+    }
+
+    /// The location part of `src`: without a title or angle brackets.
+    pub fn location(&self) -> String {
+        let s = self.src.trim();
+        if let Some(rest) = s.strip_prefix('<')
+            && let Some(end) = rest.find('>')
+        {
+            return rest[..end].to_string();
+        }
+        s.split_whitespace().next().unwrap_or("").to_string()
+    }
+}
+
+/// Text as plain text, images as their Markdown.
+pub fn plain_text(spans: &[Span]) -> String {
+    spans
+        .iter()
+        .map(|s| match &s.style.image {
+            Some(img) => img.markdown(),
+            None => s.text.clone(),
+        })
+        .collect()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -479,6 +576,15 @@ fn inline_into(chars: &[char], style: &Style, out: &mut Vec<Span>) {
                 i = j + 2;
                 continue;
             }
+        if c == '!' && !style.code && style.image.is_none() && chars.get(i + 1) == Some(&'[')
+            && let Some((image, end)) = match_image(chars, i) {
+                flush(&mut buf, out);
+                let mut st = style.clone();
+                st.image = Some(image);
+                push_text(out, &OBJECT.to_string(), &st);
+                i = end;
+                continue;
+            }
         if c == '[' && style.link.is_none() && !style.code && !(i > 0 && chars[i - 1] == '!')
             && let Some((text_end, url, end)) = match_link(chars, i) {
                 flush(&mut buf, out);
@@ -502,6 +608,58 @@ fn inline_into(chars: &[char], style: &Style, out: &mut Vec<Span>) {
         i += 1;
     }
     flush(&mut buf, out);
+}
+
+/// `![alt](src)` starting at `i` (the `!`), and the index after it. The
+/// source may hold a title (`"…"`) or be in angle brackets.
+pub fn match_image(chars: &[char], i: usize) -> Option<(Image, usize)> {
+    if chars.get(i) != Some(&'!') || chars.get(i + 1) != Some(&'[') {
+        return None;
+    }
+    let mut depth = 0;
+    let mut j = i + 2;
+    while j < chars.len() {
+        match chars[j] {
+            '\\' => j += 1,
+            '[' => depth += 1,
+            ']' if depth == 0 => break,
+            ']' => depth -= 1,
+            _ => {}
+        }
+        j += 1;
+    }
+    if j >= chars.len() || chars.get(j + 1) != Some(&'(') {
+        return None;
+    }
+    let src_start = j + 2;
+    let mut k = src_start;
+    let mut angle = chars.get(k) == Some(&'<');
+    while k < chars.len() {
+        match chars[k] {
+            '\\' => k += 1,
+            '>' if angle => angle = false,
+            ')' if !angle => break,
+            _ => {}
+        }
+        k += 1;
+    }
+    if k >= chars.len() {
+        return None;
+    }
+    let mut image = Image { alt: chars[i + 2..j].iter().collect(), src: chars[src_start..k].iter().collect(), attrs: None };
+    if image.location().is_empty() {
+        return None;
+    }
+    let mut end = k + 1;
+    // Pandoc attributes: `{width=300px}` right after the image.
+    if chars.get(end) == Some(&'{')
+        && let Some(close) = chars[end + 1..].iter().position(|&c| matches!(c, '}' | '{' | '\n')).map(|p| end + 1 + p)
+        && chars[close] == '}'
+    {
+        image.attrs = Some(chars[end + 1..close].iter().collect());
+        end = close + 1;
+    }
+    Some((image, end))
 }
 
 /// `[text](url)` starting at `i`. Returns (index of `]`, url, index after `)`).
@@ -559,6 +717,7 @@ fn merge(spans: Vec<Span>) -> Vec<Span> {
     for s in spans {
         if let Some(last) = out.last_mut()
             && last.style == s.style
+            && s.style.image.is_none()
         {
             last.text.push_str(&s.text);
             continue;
@@ -664,6 +823,8 @@ fn escape_text(text: &str, out: &mut String, at_line_start: bool) {
     for (i, &c) in chars.iter().enumerate() {
         let first = at_line_start && i == 0;
         let needs = matches!(c, '\\' | '*' | '_' | '`' | '~' | '[' | ']')
+            || (c == '!' && chars.get(i + 1).is_none_or(|&n| n == '['))
+            || (c == '{' && i == 0)
             || (first && matches!(c, '#' | '>' | '-' | '+'))
             || (c == ':' && i >= 4 && {
                 let before: String = chars[i.saturating_sub(5)..i].iter().collect();
@@ -740,7 +901,9 @@ fn serialize_plain_runs(spans: &[Span], escape: bool, alt: u8, line_start: bool)
                 stack.push(m);
             }
         }
-        if span.style.code {
+        if let Some(img) = &span.style.image {
+            out.push_str(&img.markdown());
+        } else if span.style.code {
             out.push('`');
             out.push_str(&span.text);
             out.push('`');
@@ -836,6 +999,51 @@ mod tests {
         assert_eq!(back.rows[0][1], "a|b");
         // Not a table: no delimiter row.
         assert_eq!(parse("a | b\nc | d")[0].block, Block::Para);
+    }
+
+    #[test]
+    fn images() {
+        rt("![a cat](cat.png)");
+        rt("Before ![](img/x.png \"Title\") after");
+        rt("[![badge](https://x.org/b.svg)](https://x.org)");
+        rt("![one](a.png)![two](b.png)");
+        rt("![same](a.png)![same](a.png)");
+        rt("**![bold](b.png)**");
+        rt("- ![in a list](l.png)");
+        rt("![<spaces>](<my file.png>)");
+        rt("![w](a.png){width=300px} text");
+        rt("![w](a.png){} text");
+        let line = Line {
+            block: Block::Para,
+            spans: vec![
+                parse("![w](a.png)")[0].spans[0].clone(),
+                Span { text: "{not attrs}".into(), style: Style::default() },
+            ],
+        };
+        let s = serialize_line(&line);
+        assert_eq!(parse(&s)[0], line, "{s}");
+        let img = parse("![w](a.png){#id width=50% .c}")[0].spans[0].style.image.clone().unwrap();
+        assert_eq!(img.width(), Some(Width::Percent(50.0)));
+        assert_eq!(img.with_width(Some(240)).markdown(), "![w](a.png){#id .c width=240px}");
+        assert_eq!(img.with_width(Some(240)).width(), Some(Width::Px(240.0)));
+        assert_eq!(Image::decode(&img.encode()), img);
+        let plain = Image { alt: "a".into(), src: "b".into(), attrs: None };
+        assert_eq!(Image::decode(&plain.encode()), plain);
+        assert_eq!(plain.with_width(None), plain);
+        let l = &parse("x ![alt](p.png \"t\")")[0];
+        assert_eq!(l.spans.len(), 2);
+        let img = l.spans[1].style.image.clone().unwrap();
+        assert_eq!((img.alt.as_str(), img.src.as_str(), img.location().as_str()), ("alt", "p.png \"t\"", "p.png"));
+        assert_eq!(l.spans[1].text, OBJECT.to_string());
+        assert_eq!(Image { alt: String::new(), src: "<a b.png> \"t\"".into(), attrs: None }.location(), "a b.png");
+        // Not images.
+        assert!(parse("![]()")[0].spans.iter().all(|s| s.style.image.is_none()));
+        assert!(parse("`![a](b)`")[0].spans.iter().all(|s| s.style.image.is_none()));
+        // Text that would read as an image stays text.
+        let line = Line::plain(Block::Para, "wow![a](b) wow!");
+        let s = serialize_line(&line);
+        assert_eq!(parse(&s)[0], line, "{s}");
+        assert_eq!(plain_text(&parse("a ![b](c.png)")[0].spans), "a ![b](c.png)");
     }
 
     #[test]

@@ -173,7 +173,7 @@ fn literal(text: &str) -> String {
 }
 
 fn plain(md: &str) -> String {
-    model::parse_inline(md).into_iter().map(|s| s.text).collect()
+    model::plain_text(&model::parse_inline(md))
 }
 
 /// The text as a Markdown table, or None when a table would not show it
